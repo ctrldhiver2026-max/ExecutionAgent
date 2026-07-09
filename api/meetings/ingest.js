@@ -91,6 +91,15 @@ export default async function handler(req, res) {
     transcriptLines: transcript.length,
   });
 
+  // Nothing to extract from an empty transcript (CC never enabled, or an
+  // empty probe) — persist the record as a capture-failure signal, but don't
+  // spend a Claude call on it.
+  if (transcript.length === 0) {
+    await persistMeeting({ meeting_id, ended_at, attendees, transcript, extracted: null });
+    res.status(200).json({ status: "received", extraction: "skipped_empty_transcript" });
+    return;
+  }
+
   try {
     const extracted = await extractProject({ transcript, attendees });
     console.log("[meetings/ingest] extracted", extracted);
