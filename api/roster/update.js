@@ -3,7 +3,7 @@
 // it wrong — the manual-edit fallback CLAUDE.md's role-identification asks for.
 import { updateRosterMember } from "../../lib/db.js";
 
-const VALID_TEAMS = ["content", "design", "dev"];
+const VALID_TEAMS = ["content", "design", "dev", "video_design"];
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -26,7 +26,7 @@ export default async function handler(req, res) {
 
   const { id, team } = req.body || {};
   if (typeof id !== "string" || !id || !VALID_TEAMS.includes(team)) {
-    res.status(400).json({ error: "id (string) and team (content|design|dev) are required" });
+    res.status(400).json({ error: "id (string) and team (content|design|dev|video_design) are required" });
     return;
   }
 

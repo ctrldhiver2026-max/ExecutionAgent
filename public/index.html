@@ -29,6 +29,9 @@
     --team-dev-bg: rgba(26, 127, 55, 0.08);
     --team-dev-fg: #1a7f37;
     --team-dev-bd: rgba(26, 127, 55, 0.35);
+    --team-video_design-bg: rgba(191, 66, 132, 0.08);
+    --team-video_design-fg: #bf4284;
+    --team-video_design-bd: rgba(191, 66, 132, 0.35);
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -382,6 +385,7 @@
   .team-content { background: var(--team-content-bg); color: var(--team-content-fg); border-color: var(--team-content-bd); }
   .team-design  { background: var(--team-design-bg);  color: var(--team-design-fg);  border-color: var(--team-design-bd); }
   .team-dev     { background: var(--team-dev-bg);     color: var(--team-dev-fg);     border-color: var(--team-dev-bd); }
+  .team-video_design { background: var(--team-video_design-bg); color: var(--team-video_design-fg); border-color: var(--team-video_design-bd); }
 
   .due-line {
     margin-top: 14px;
@@ -744,7 +748,8 @@
     if (t === "content") cls += " team-content";
     else if (t === "design") cls += " team-design";
     else if (t === "dev") cls += " team-dev";
-    return el("span", cls, t || "—");
+    else if (t === "video_design") cls += " team-video_design";
+    return el("span", cls, t === "video_design" ? "Video Design" : (t || "—"));
   }
 
   function renderDeliverablesTable(deliverables) {
@@ -1058,7 +1063,7 @@
       if (nonEmpty(person.id)) {
         var select = document.createElement("select");
         select.className = "team-select" + (person.team ? "" : " unset");
-        [["", "— set role —"], ["content", "content"], ["design", "design"], ["dev", "dev"]].forEach(function (opt) {
+        [["", "— set role —"], ["content", "content"], ["design", "design"], ["dev", "dev"], ["video_design", "Video Design"]].forEach(function (opt) {
           var o = document.createElement("option");
           o.value = opt[0];
           o.textContent = opt[1];
