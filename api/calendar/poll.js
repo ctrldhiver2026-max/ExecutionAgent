@@ -43,6 +43,14 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Graceful pre-setup: until the Google creds are configured, report ok so
+  // the 5-minute GitHub cron stays green instead of spamming failure emails.
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REFRESH_TOKEN) {
+    console.log("[calendar/poll] Google credentials not configured — skipping (see README 'Calendar watcher setup')");
+    res.status(200).json({ ok: true });
+    return;
+  }
+
   const channel = process.env.SLACK_NOTIFY_CHANNEL;
 
   try {
