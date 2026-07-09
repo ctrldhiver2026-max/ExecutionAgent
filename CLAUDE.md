@@ -1,6 +1,8 @@
 # Execution Agent — Architecture & Execution Plan (v3)
 Team Ctrl+D's | 3 people — Mansoor, Hari, Charan
 
+**Shared deployment URL:** `https://execution-agent.vercel.app` — every push to `main` auto-deploys here. All webhooks (Slack, extension, ClickUp) point at this domain.
+
 ---
 
 ## 1. Start Here — For Teammates Opening This Project
