@@ -19,6 +19,7 @@ lib/google.js                Calendar OAuth + event lookup (watcher + organizer 
 ## 1. Slack app config (api.slack.com/apps)
 
 1. **OAuth & Permissions → Bot Token Scopes:** `channels:manage`, `chat:write`, `users:read`, plus `im:write` (needed for `conversations.open` to DM people) and `mpim:write` if you ever DM groups.
+   - **`users:read.email` — required** for zero-touch attendee mapping (`lib/roster.js` / `users.lookupByEmail`): turns a calendar invite's email straight into a Slack ID with no manual entry anywhere. Without this scope, new attendees get discovered but never get invited to the channel or DMed — add the scope, then **Reinstall to Workspace** (required after any scope change) for it to take effect.
 2. **Interactivity & Shortcuts → ON**, Request URL:
    `https://execution-agent.vercel.app/api/slack/interactivity`
 3. **Event Subscriptions → ON** (optional for now), Request URL:

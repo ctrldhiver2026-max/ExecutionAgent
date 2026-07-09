@@ -1,11 +1,12 @@
 // Entry point for the extension's meeting-end POST.
 // Runs Claude extraction on the transcript, persists the meeting, resolves
-// attendees + the meeting organizer against the roster/calendar, and DMs
-// that organizer to confirm the project before the rest of the pipeline
-// (Slack channel + ClickUp tickets) runs.
+// attendees + the meeting organizer via the calendar invite (real emails,
+// zero manual roster entry — see lib/roster.js), and DMs the organizer to
+// confirm the project before the rest of the pipeline (Slack channel +
+// ClickUp tickets) runs.
 import { extractProject } from "../../lib/extraction.js";
 import { createMeetingRecord, createPendingConfirmation } from "../../lib/db.js";
-import { resolveAttendees, findRosterMemberByEmail } from "../../lib/roster.js";
+import { resolveAttendees, findRosterMemberByEmail, inferMissingTeams } from "../../lib/roster.js";
 import { findEventByMeetCode } from "../../lib/google.js";
 import { sendConfirmationDm } from "../../lib/slack.js";
 
@@ -61,9 +62,16 @@ async function triggerConfirmation({ meeting_id, extracted, attendees }) {
   }
 
   try {
-    // Calendar attendees (real emails from the invite) back up name-matching
-    // when a captured Meet display name doesn't exactly match the roster.
+    // "Who attended" always comes from the extension's capture (attendees);
+    // the calendar invite only supplies a real email for each captured name
+    // — zero-touch, auto-creates a roster row via Slack email lookup for
+    // anyone not seen before. Falls back to name-only roster matching when
+    // no calendar email is found for a captured attendee.
     const resolvedAttendees = await resolveAttendees(attendees, calendarEvent?.attendees || []);
+    // Best-effort role inference: someone with no team yet who's named as a
+    // deliverable owner gets tagged with that deliverable's team, so the
+    // 3-flow assignment engine can consider them for THIS meeting too.
+    await inferMissingTeams(resolvedAttendees, extracted.deliverables);
     const project = {
       meeting_id,
       project_name: extracted.project_name,

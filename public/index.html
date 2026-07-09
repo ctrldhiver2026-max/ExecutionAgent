@@ -313,6 +313,66 @@
     .card { padding: 18px 16px; }
     .refresh { margin-left: 0; width: 100%; }
   }
+
+  /* Tabs */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 0.92rem;
+    font-weight: 600;
+    padding: 10px 16px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* People table */
+  .people-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 24px;
+  }
+  .people-hint {
+    color: var(--text-dim);
+    font-size: 0.88rem;
+    margin-bottom: 16px;
+  }
+  td.needs-role { background: rgba(210, 153, 34, 0.08); }
+  .slack-yes { color: var(--green); }
+  .slack-no { color: var(--text-faint); }
+  select.team-select {
+    background: var(--chip-bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  select.team-select.unset { border-color: var(--amber); color: var(--amber); }
+  .save-flash {
+    font-size: 0.78rem;
+    color: var(--green);
+    margin-left: 8px;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+  .save-flash.visible { opacity: 1; }
+  .save-flash.error { color: var(--red); }
 </style>
 </head>
 <body>
@@ -327,12 +387,28 @@
     </div>
   </header>
 
+  <div class="tabs">
+    <button type="button" class="tab-btn active" id="tab-btn-meetings">Meetings</button>
+    <button type="button" class="tab-btn" id="tab-btn-people">People</button>
+  </div>
+
   <div class="error-banner" id="error-banner"></div>
 
-  <div id="content">
-    <div class="state" id="loading-state">
-      <div class="state-icon">⏳</div>
-      <p>Loading meetings…</p>
+  <div class="tab-panel active" id="tab-panel-meetings">
+    <div id="content">
+      <div class="state" id="loading-state">
+        <div class="state-icon">⏳</div>
+        <p>Loading meetings…</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="tab-panel-people">
+    <div id="people-content">
+      <div class="state" id="people-loading-state">
+        <div class="state-icon">⏳</div>
+        <p>Loading people…</p>
+      </div>
     </div>
   </div>
 </div>
@@ -345,9 +421,10 @@
   // Relative when served from the deployment (incl. per-branch preview
   // URLs); absolute fallback so the page also works opened as a local file
   // or in an editor preview panel.
-  var API_URL = /\.vercel\.app$/.test(location.hostname)
-    ? "/api/meetings/list"
-    : "https://execution-agent.vercel.app/api/meetings/list";
+  var isDeployed = /\.vercel\.app$/.test(location.hostname);
+  var API_URL = isDeployed ? "/api/meetings/list" : "https://execution-agent.vercel.app/api/meetings/list";
+  var ROSTER_LIST_URL = isDeployed ? "/api/roster/list" : "https://execution-agent.vercel.app/api/roster/list";
+  var ROSTER_UPDATE_URL = isDeployed ? "/api/roster/update" : "https://execution-agent.vercel.app/api/roster/update";
 
   var contentEl = document.getElementById("content");
   var errorBanner = document.getElementById("error-banner");
@@ -598,6 +675,121 @@
     errorBanner.classList.remove("visible");
   }
 
+  // ---------- People (role editor) ----------
+
+  var peopleContentEl = document.getElementById("people-content");
+  var peopleLoaded = false;
+
+  function setPeopleContent(node) {
+    while (peopleContentEl.firstChild) peopleContentEl.removeChild(peopleContentEl.firstChild);
+    peopleContentEl.appendChild(node);
+  }
+
+  function renderPeopleError(message) {
+    var box = el("div", "state");
+    box.appendChild(el("div", "state-icon", "⚠️"));
+    box.appendChild(el("p", null, "Could not load people: " + asString(message)));
+    return box;
+  }
+
+  function renderPeopleTable(roster) {
+    var card = el("div", "people-card");
+    card.appendChild(el("div", "people-hint",
+      "Auto-populated from calendar invites + Slack. Rows in amber need a role set manually."));
+
+    var scroll = el("div", "table-scroll");
+    var table = el("table");
+    var thead = el("thead");
+    var headRow = el("tr");
+    headRow.appendChild(el("th", null, "Name"));
+    headRow.appendChild(el("th", null, "Email"));
+    headRow.appendChild(el("th", null, "Slack"));
+    headRow.appendChild(el("th", "team-col", "Team"));
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    var tbody = el("tbody");
+    roster.forEach(function (person) {
+      if (!person || typeof person !== "object") return;
+      var tr = el("tr");
+      tr.appendChild(el("td", null, nonEmpty(person.name) ? person.name : "—"));
+      tr.appendChild(el("td", null, nonEmpty(person.email) ? person.email : "—"));
+
+      var slackTd = el("td", null);
+      slackTd.appendChild(el("span", person.slack_id ? "slack-yes" : "slack-no", person.slack_id ? "✓ linked" : "not linked"));
+      tr.appendChild(slackTd);
+
+      var teamTd = el("td", "team-cell");
+      if (!person.team) teamTd.classList.add("needs-role");
+      if (nonEmpty(person.id)) {
+        var select = document.createElement("select");
+        select.className = "team-select" + (person.team ? "" : " unset");
+        [["", "— set role —"], ["content", "content"], ["design", "design"], ["dev", "dev"]].forEach(function (opt) {
+          var o = document.createElement("option");
+          o.value = opt[0];
+          o.textContent = opt[1];
+          if ((person.team || "") === opt[0]) o.selected = true;
+          select.appendChild(o);
+        });
+        var flash = el("span", "save-flash", "Saved");
+        select.addEventListener("change", function () {
+          var newTeam = select.value;
+          if (!newTeam) return;
+          select.disabled = true;
+          fetch(ROSTER_UPDATE_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: person.id, team: newTeam }),
+          })
+            .then(function (res) {
+              if (!res.ok) throw new Error("HTTP " + res.status);
+              return res.json();
+            })
+            .then(function () {
+              select.disabled = false;
+              select.className = "team-select";
+              flash.textContent = "Saved";
+              flash.classList.remove("error");
+              flash.classList.add("visible");
+              setTimeout(function () { flash.classList.remove("visible"); }, 1800);
+            })
+            .catch(function () {
+              select.disabled = false;
+              flash.textContent = "Failed to save";
+              flash.classList.add("visible", "error");
+            });
+        });
+        teamTd.appendChild(select);
+        teamTd.appendChild(flash);
+      } else {
+        teamTd.appendChild(teamBadge(person.team));
+      }
+      tr.appendChild(teamTd);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    card.appendChild(scroll);
+    return card;
+  }
+
+  function refreshPeople() {
+    fetch(ROSTER_LIST_URL, { headers: { "Accept": "application/json" }, cache: "no-store" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status + " " + res.statusText);
+        return res.json();
+      })
+      .then(function (data) {
+        var roster = (data && Array.isArray(data.roster)) ? data.roster : [];
+        peopleLoaded = true;
+        setPeopleContent(renderPeopleTable(roster));
+      })
+      .catch(function (err) {
+        var message = (err && err.message) ? err.message : String(err);
+        setPeopleContent(renderPeopleError(message));
+      });
+  }
+
   // ---------- Fetch loop ----------
 
   function refresh() {
@@ -641,6 +833,27 @@
       setRefreshStatus(true, false);
     }
   }, 30000);
+
+  // ---------- Tabs ----------
+
+  var tabBtnMeetings = document.getElementById("tab-btn-meetings");
+  var tabBtnPeople = document.getElementById("tab-btn-people");
+  var tabPanelMeetings = document.getElementById("tab-panel-meetings");
+  var tabPanelPeople = document.getElementById("tab-panel-people");
+
+  function showTab(name) {
+    var meetingsActive = name === "meetings";
+    tabBtnMeetings.classList.toggle("active", meetingsActive);
+    tabBtnPeople.classList.toggle("active", !meetingsActive);
+    tabPanelMeetings.classList.toggle("active", meetingsActive);
+    tabPanelPeople.classList.toggle("active", !meetingsActive);
+    if (!meetingsActive && !peopleLoaded) refreshPeople();
+  }
+
+  tabBtnMeetings.addEventListener("click", function () { showTab("meetings"); });
+  tabBtnPeople.addEventListener("click", function () { showTab("people"); });
+
+  setInterval(refreshPeople, REFRESH_MS);
 })();
 </script>
 </body>

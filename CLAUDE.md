@@ -64,11 +64,12 @@ This POST is the **single entry point** into the rest of the system — everythi
 
 ## 4. Role Identification — Roster Adapter
 
-Don't ask the AI to guess who's a designer vs developer from tone. Extract **names + tasks**, then **resolve** identity against a roster.
+Don't ask the AI to guess who's a designer vs developer from tone. Extract **names + tasks**, then **resolve** identity against a roster — **zero manual input, ever** (no one hand-types a Slack ID or pre-seeds an employee):
 
-- **Mock roster service** (hackathon-realistic choice): a Supabase table of ~10–15 people — `{name, email, slack_id, team: content/design/dev, manager, active_ticket_count}`
-- Built with the same call shape a real HRMS (e.g. Keka) API would have, so it's a one-line swap later — a legitimate "pluggable adapter" architecture point for judges, not a shortcut you need to hide
-- **Name resolution**: match extracted names against the extension's captured attendee list first (much more reliable than fuzzy-matching a raw transcript), then look up that person's team/role in the roster
+- **Roster is self-populating** (`lib/roster.js`): the calendar invite gives real emails for everyone on the call → `users.lookupByEmail` (Slack API, needs the `users:read.email` scope — see §1) resolves each email straight to a Slack ID, no guessing. First time we see someone, their roster row is created automatically; `slack_id` is cached (write-through) so it's a one-time Slack API call per person, not per meeting.
+- **Team/role**: not knowable from Slack, so it's inferred — whoever's named as a deliverable's owner in that meeting gets tagged with that deliverable's team (`inferMissingTeams`). Anyone left unassigned shows up in amber in the dashboard's **People** tab (`public/index.html`), where a teammate picks their role from a dropdown once — that's the *only* manual step in the whole identity pipeline, and it's optional (auto-inference covers most cases).
+- Meet's caption/People-panel names are a **fallback only**, used purely for ad-hoc calls with no calendar invite to correlate against (no emails available in that DOM at all) — matched against the roster by display name, which can drift and silently drop someone's `slack_id`. Prefer scheduling real meetings via the calendar so this path is never needed.
+- Table shape unchanged: `{name, email, slack_id, team: content/design/dev, manager, active_ticket_count}` — still the same call shape a real HRMS (e.g. Keka) API would have, a legitimate "pluggable adapter" point for judges.
 
 ---
 
