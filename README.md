@@ -89,6 +89,14 @@ alter table roster alter column email drop not null;
 alter table roster drop constraint roster_team_check;
 alter table roster add constraint roster_team_check
   check (team is null or team in ('content', 'design', 'dev', 'video_design'));
+
+-- REQUIRED migration (2026-07-10): dashboard's Project Status panel — who
+-- currently owns/drives a provisioned project, manually picked from the
+-- roster and independent of deliverable owners. Nullable: unset until
+-- someone picks it on the dashboard. On-track status is NOT stored here —
+-- it's computed live from ClickUp on every view (see lib/clickup.js
+-- getProjectLiveStatus), so there's no "done" concept to keep in sync.
+alter table projects add column if not exists held_by_id text;
 ```
 
 **Optional ingest lockdown:** `/api/meetings/ingest` is public. To require auth,

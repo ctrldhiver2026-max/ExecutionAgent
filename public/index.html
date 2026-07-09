@@ -165,34 +165,62 @@
     padding: 4px 4px 6px 8px;
   }
   .side-label-row .side-label { padding: 0; }
-  .clear-all-btn {
-    background: none;
-    border: none;
-    color: var(--text-faint);
-    font: inherit;
-    font-size: 0.68rem;
-    font-weight: 650;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    padding: 2px 6px;
-    border-radius: 5px;
-  }
-  .clear-all-btn:hover { color: var(--red); background: rgba(207, 34, 46, 0.08); }
 
-  .side-item-row { display: flex; align-items: center; gap: 2px; }
+  .side-item-row { display: flex; align-items: center; gap: 2px; position: relative; }
   .side-item-row .side-item { flex: 1; min-width: 0; }
-  .side-delete {
+  .side-kebab {
     background: none;
     border: none;
     color: var(--text-faint);
     cursor: pointer;
-    font-size: 0.82rem;
+    font-size: 0.95rem;
     padding: 4px 7px;
     border-radius: 6px;
     flex-shrink: 0;
+    line-height: 1;
   }
-  .side-delete:hover { color: var(--red); background: rgba(207, 34, 46, 0.08); }
+  .side-kebab:hover, .side-kebab.open { color: var(--text); background: var(--surface-2); }
+
+  .kebab-menu {
+    position: absolute;
+    right: 4px;
+    top: 100%;
+    z-index: 20;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+    min-width: 120px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+  }
+  .kebab-menu button {
+    background: none;
+    border: none;
+    text-align: left;
+    padding: 7px 10px;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 0.82rem;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .kebab-menu button:hover { background: var(--surface-2); }
+  .kebab-menu button.danger { color: var(--red); }
+  .kebab-menu button.danger:hover { background: rgba(207, 34, 46, 0.08); }
+
+  .side-rename-input {
+    flex: 1;
+    min-width: 0;
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--team-content-fg);
+    background: var(--surface);
+    color: var(--text);
+  }
 
   .side-footer {
     border-top: 1px solid var(--border);
@@ -517,6 +545,49 @@
     padding: 2px 4px;
   }
 
+  /* Project Status panel */
+  .status-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 4px; }
+  .status-row + .status-row { border-top: 1px solid var(--border); }
+  .status-key {
+    font-size: 0.68rem;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+  }
+  .status-value { font-size: 0.85rem; color: var(--text); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .held-by-select {
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 5px 8px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    max-width: 100%;
+  }
+  .on-track-badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 0.76rem;
+    font-weight: 650;
+    border: 1px solid transparent;
+  }
+  .on-track-badge.yes { background: rgba(26, 127, 55, 0.1); color: var(--green); border-color: rgba(26, 127, 55, 0.3); }
+  .on-track-badge.no { background: rgba(207, 34, 46, 0.1); color: var(--red); border-color: rgba(207, 34, 46, 0.3); }
+  .on-track-badge.pending { background: var(--surface-2); color: var(--text-faint); border-color: var(--border); }
+  .assigned-chip {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 0.76rem;
+    background: var(--surface-2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .overdue-note { font-size: 0.74rem; color: var(--red); }
+
   /* ============ Responsive ============ */
   @media (max-width: 1100px) {
     .app { grid-template-columns: 220px minmax(0, 1fr); }
@@ -557,7 +628,6 @@
       <div class="side-group">
         <div class="side-label-row">
           <div class="side-label">Projects</div>
-          <button type="button" class="clear-all-btn" id="clear-all-btn">Clear all</button>
         </div>
         <div id="project-list">
           <div class="side-empty">Loading…</div>
@@ -593,8 +663,12 @@
   <!-- ============ Right rail ============ -->
   <aside class="rail">
     <div class="rail-group">
-      <div class="rail-label">Workflow</div>
+      <div class="rail-label">Timeline</div>
       <div id="rail-timeline"><div class="rail-empty">Select a project.</div></div>
+    </div>
+    <div class="rail-group" id="rail-status-group" style="display: none;">
+      <div class="rail-label">Project Status</div>
+      <div id="rail-status"></div>
     </div>
   </aside>
 </div>
@@ -620,11 +694,12 @@
   var projectListEl = document.getElementById("project-list");
   var upcomingListEl = document.getElementById("upcoming-list");
   var railTimelineEl = document.getElementById("rail-timeline");
+  var railStatusGroupEl = document.getElementById("rail-status-group");
+  var railStatusEl = document.getElementById("rail-status");
   var errorBanner = document.getElementById("error-banner");
   var refreshDot = document.getElementById("refresh-dot");
   var refreshText = document.getElementById("refresh-text");
   var peopleBtn = document.getElementById("people-btn");
-  var clearAllBtn = document.getElementById("clear-all-btn");
 
   var meetings = [];          // last good fetch
   var roster = [];
@@ -633,6 +708,12 @@
   var view = "project";       // "project" | "people"
   var hasRenderedData = false;
   var lastFetchTime = null;
+  var openMenuKey = null;     // which project row's kebab menu is open
+  var renamingKey = null;     // which project row is mid-rename
+  // Live ClickUp status is fetched on demand, not polled — cached by
+  // clickup_task_id so switching between projects you've already viewed
+  // doesn't re-hit the ClickUp API every time.
+  var liveStatusCache = {};   // clickup_task_id -> { onTrack, overdueTasks, assignees } | "loading" | "error"
 
   // ---------- DOM helpers (all content set via textContent; never innerHTML) ----------
 
@@ -710,6 +791,30 @@
       var key = meetingKey(m);
       var row = el("div", "side-item-row");
 
+      if (renamingKey === key) {
+        var input = document.createElement("input");
+        input.type = "text";
+        input.className = "side-rename-input";
+        input.value = meetingTitle(m);
+        row.appendChild(input);
+
+        var commit = function () {
+          var next = input.value.trim();
+          renamingKey = null;
+          if (!next || next === meetingTitle(m)) { renderAll(); return; }
+          renameMeetingCard(m, next);
+        };
+        input.addEventListener("keydown", function (e) {
+          if (e.key === "Enter") { e.preventDefault(); commit(); }
+          else if (e.key === "Escape") { e.preventDefault(); renamingKey = null; renderAll(); }
+        });
+        input.addEventListener("blur", commit);
+        projectListEl.appendChild(row);
+        input.focus();
+        input.select();
+        return;
+      }
+
       var btn = el("button", "side-item" + (view === "project" && key === selectedKey ? " active" : ""));
       btn.type = "button";
       btn.appendChild(document.createTextNode(meetingTitle(m)));
@@ -721,14 +826,37 @@
       });
       row.appendChild(btn);
 
-      var del = el("button", "side-delete", "✕");
-      del.type = "button";
-      del.title = "Delete this meeting";
-      del.addEventListener("click", function (e) {
+      var kebab = el("button", "side-kebab" + (openMenuKey === key ? " open" : ""), "⋮");
+      kebab.type = "button";
+      kebab.title = "More options";
+      kebab.addEventListener("click", function (e) {
         e.stopPropagation();
-        deleteMeetingCard(m);
+        openMenuKey = (openMenuKey === key) ? null : key;
+        renderProjectList();
       });
-      row.appendChild(del);
+      row.appendChild(kebab);
+
+      if (openMenuKey === key) {
+        var menu = el("div", "kebab-menu");
+        var editBtn = el("button", null, "Edit");
+        editBtn.type = "button";
+        editBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          openMenuKey = null;
+          renamingKey = key;
+          renderProjectList();
+        });
+        var deleteBtn = el("button", "danger", "Delete");
+        deleteBtn.type = "button";
+        deleteBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          openMenuKey = null;
+          deleteMeetingCard(m);
+        });
+        menu.appendChild(editBtn);
+        menu.appendChild(deleteBtn);
+        row.appendChild(menu);
+      }
 
       projectListEl.appendChild(row);
     });
@@ -983,6 +1111,7 @@
     clear(railTimelineEl);
     if (!m) {
       railTimelineEl.appendChild(el("div", "rail-empty", "Select a project."));
+      renderProjectStatus(null);
       return;
     }
 
@@ -1017,6 +1146,138 @@
       railTimelineEl.appendChild(el("div", "rail-note",
         "Live confirmation/provisioning status unavailable — showing capture data only."));
     }
+
+    renderProjectStatus(m);
+  }
+
+  // ---------- Right rail: Project Status (held by / on-track / assigned) ----------
+
+  function renderProjectStatus(m) {
+    var proj = m ? latestByMeetingId(pipeline.projects, asString(m.meeting_id)) : null;
+    clear(railStatusEl);
+    if (!proj) {
+      railStatusGroupEl.style.display = "none";
+      return;
+    }
+    railStatusGroupEl.style.display = "";
+
+    // Held by — manually picked from the roster, independent of deliverable owners.
+    var heldByRow = el("div", "status-row");
+    heldByRow.appendChild(el("div", "status-key", "Held by"));
+    var heldByValue = el("div", "status-value");
+    var select = document.createElement("select");
+    select.className = "held-by-select";
+    var noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.textContent = "— unassigned —";
+    select.appendChild(noneOpt);
+    roster.forEach(function (person) {
+      if (!person || !nonEmpty(person.id)) return;
+      var o = document.createElement("option");
+      o.value = person.id;
+      o.textContent = nonEmpty(person.name) ? person.name : (person.email || person.id);
+      if (proj.held_by_id === person.id) o.selected = true;
+      select.appendChild(o);
+    });
+    var flash = el("span", "save-flash", "Saved");
+    select.addEventListener("change", function () {
+      var meetingId = proj.meeting_id;
+      var newHeldBy = select.value || null;
+      select.disabled = true;
+      fetch(PIPELINE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meeting_id: meetingId, held_by_id: newHeldBy }),
+      })
+        .then(function (res) {
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return res.json();
+        })
+        .then(function () {
+          proj.held_by_id = newHeldBy;
+          select.disabled = false;
+          flash.textContent = "Saved";
+          flash.classList.remove("error");
+          flash.classList.add("visible");
+          setTimeout(function () { flash.classList.remove("visible"); }, 1800);
+        })
+        .catch(function () {
+          select.disabled = false;
+          flash.textContent = "Failed to save";
+          flash.classList.add("visible", "error");
+        });
+    });
+    heldByValue.appendChild(select);
+    heldByValue.appendChild(flash);
+    heldByRow.appendChild(heldByValue);
+    railStatusEl.appendChild(heldByRow);
+
+    // On track + Assigned — both computed live from ClickUp, never stored.
+    var onTrackRow = el("div", "status-row");
+    onTrackRow.appendChild(el("div", "status-key", "On track"));
+    var onTrackValue = el("div", "status-value");
+    var assignedRow = el("div", "status-row");
+    assignedRow.appendChild(el("div", "status-key", "Assigned"));
+    var assignedValue = el("div", "status-value");
+
+    var taskId = proj.clickup_task_id;
+    if (!nonEmpty(taskId)) {
+      onTrackValue.appendChild(el("span", "on-track-badge pending", "No ClickUp task"));
+      assignedValue.appendChild(document.createTextNode("—"));
+    } else {
+      var cached = liveStatusCache[taskId];
+      if (cached === "loading") {
+        onTrackValue.appendChild(el("span", "on-track-badge pending", "Checking…"));
+        assignedValue.appendChild(document.createTextNode("Checking…"));
+      } else if (cached === "error") {
+        onTrackValue.appendChild(el("span", "on-track-badge pending", "Unavailable"));
+        assignedValue.appendChild(document.createTextNode("—"));
+      } else if (cached) {
+        onTrackValue.appendChild(el("span", "on-track-badge " + (cached.onTrack ? "yes" : "no"), cached.onTrack ? "Yes" : "No"));
+        if (!cached.onTrack && Array.isArray(cached.overdueTasks) && cached.overdueTasks.length) {
+          onTrackValue.appendChild(el("span", "overdue-note", cached.overdueTasks.length + " overdue"));
+        }
+        if (Array.isArray(cached.assignees) && cached.assignees.length) {
+          cached.assignees.forEach(function (name) {
+            assignedValue.appendChild(el("span", "assigned-chip", name));
+          });
+        } else {
+          assignedValue.appendChild(document.createTextNode("Unassigned"));
+        }
+      } else {
+        onTrackValue.appendChild(el("span", "on-track-badge pending", "Checking…"));
+        assignedValue.appendChild(document.createTextNode("Checking…"));
+        fetchLiveStatus(taskId);
+      }
+    }
+    onTrackRow.appendChild(onTrackValue);
+    assignedRow.appendChild(assignedValue);
+    railStatusEl.appendChild(onTrackRow);
+    railStatusEl.appendChild(assignedRow);
+  }
+
+  function fetchLiveStatus(taskId) {
+    liveStatusCache[taskId] = "loading";
+    fetch(PIPELINE_URL + "?live_status_for=" + encodeURIComponent(taskId), {
+      headers: { "Accept": "application/json" },
+      cache: "no-store",
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        liveStatusCache[taskId] = data;
+        var m = selectedMeeting();
+        var proj = m ? latestByMeetingId(pipeline.projects, asString(m.meeting_id)) : null;
+        if (proj && proj.clickup_task_id === taskId) renderProjectStatus(m);
+      })
+      .catch(function () {
+        liveStatusCache[taskId] = "error";
+        var m = selectedMeeting();
+        var proj = m ? latestByMeetingId(pipeline.projects, asString(m.meeting_id)) : null;
+        if (proj && proj.clickup_task_id === taskId) renderProjectStatus(m);
+      });
   }
 
   // ---------- Center: people view ----------
@@ -1309,21 +1570,26 @@
       });
   }
 
-  function clearAllMeetings() {
-    if (!window.confirm("Delete ALL projects and their Slack/ClickUp records? This cannot be undone.")) return;
-    postDelete({ all: true })
-      .then(function () {
-        selectedKey = null;
-        refreshMeetings();
-      })
+  function renameMeetingCard(m, newName) {
+    postDelete({ action: "rename", id: m.id, meeting_id: m.meeting_id, project_name: newName })
+      .then(refreshMeetings)
       .catch(function (err) {
-        window.alert("Failed to clear: " + ((err && err.message) || err));
+        window.alert("Failed to rename: " + ((err && err.message) || err));
+        renderAll();
       });
   }
 
   // ---------- Wire up ----------
 
-  clearAllBtn.addEventListener("click", clearAllMeetings);
+  // Close an open kebab menu on any click outside of it (the menu itself
+  // stops propagation on its own buttons, so this only fires for true
+  // outside clicks).
+  document.addEventListener("click", function () {
+    if (openMenuKey !== null) {
+      openMenuKey = null;
+      renderProjectList();
+    }
+  });
 
   peopleBtn.addEventListener("click", function () {
     view = (view === "people") ? "project" : "people";
