@@ -8,11 +8,12 @@
 (() => {
   const CAPTIONS_REGION_SELECTOR = '[role="region"][aria-label="Captions"]';
   const CAPTION_LINE_SELECTOR = ':scope > div';
-  const SPEAKER_NAME_SELECTOR = '.adE6rb [class]'; // wraps avatar img + name div
+  // .adE6rb wraps an avatar <img> followed by one name <div> (.KcIKyf.jxFHg) —
+  // select the div specifically so we don't get the img (which has no text).
+  const SPEAKER_NAME_SELECTOR = '.adE6rb div';
   const CAPTION_TEXT_SELECTOR = '.ygicle';
   const PEOPLE_PANEL_ROW_SELECTOR = '.SKWIhd';
   const PEOPLE_PANEL_NAME_SELECTOR = '.zWGUib';
-  const VIDEO_TILE_NAME_SELECTOR = '.ns17te'; // on-screen name tag, always visible
 
   const transcript = []; // [{ speaker, text, ts }]
   const lineIndexByNode = new WeakMap(); // caption block DOM node -> transcript index
@@ -53,11 +54,11 @@
   }
 
   function captureAttendees() {
+    // People panel rows are the only reliable structured source — video-tile
+    // "name tag" elements turned out to be a UI badge overlay that matches
+    // unrelated on-screen text, so we don't use them. Caption speakers
+    // (captureCaptionLines) fill the gap when the panel isn't open.
     document.querySelectorAll(`${PEOPLE_PANEL_ROW_SELECTOR} ${PEOPLE_PANEL_NAME_SELECTOR}`).forEach((el) => {
-      const name = el.textContent.trim().replace(/\s*\(You\)$/, '');
-      if (name) attendees.add(name);
-    });
-    document.querySelectorAll(VIDEO_TILE_NAME_SELECTOR).forEach((el) => {
       const name = el.textContent.trim().replace(/\s*\(You\)$/, '');
       if (name) attendees.add(name);
     });
@@ -150,8 +151,28 @@
     if (attachCaptionsObserver()) clearInterval(attachPoll);
   }, 2000);
 
-  // Attendees (People panel / video tiles) can change independent of captions.
+  // Auto-open the People panel once so silent (non-speaking) attendees still
+  // get captured, not just active speakers. NOTE: this button's aria-label
+  // wasn't directly verified against the live DOM (unlike the CC button) —
+  // if attendee capture stops picking up panel rows, check this selector
+  // first, since Meet may label it differently than assumed here.
+  let peoplePanelOpenAttempted = false;
+  function autoOpenPeoplePanel() {
+    if (peoplePanelOpenAttempted) return;
+    if (document.querySelector(PEOPLE_PANEL_ROW_SELECTOR)) {
+      peoplePanelOpenAttempted = true;
+      return;
+    }
+    const peopleButton = document.querySelector('button[aria-label*="people" i]:not([aria-label*="add" i])');
+    if (peopleButton) {
+      peopleButton.click();
+      peoplePanelOpenAttempted = true;
+    }
+  }
+
+  // Attendees (People panel) can change independent of captions.
   const attendeePoll = setInterval(() => {
+    autoOpenPeoplePanel();
     captureAttendees();
     sendUpdate();
   }, 3000);
