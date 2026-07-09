@@ -36,6 +36,10 @@
       const text = textEl.textContent.trim();
       const ts = new Date().toISOString();
 
+      // Whoever speaks is definitely an attendee — this is more reliable
+      // than the People panel / video tiles, which aren't always rendered.
+      if (speaker !== 'Unknown') attendees.add(speaker.replace(/\s*\(You\)$/, ''));
+
       const existingIndex = lineIndexByNode.get(block);
       if (existingIndex !== undefined) {
         // Meet mutates the same block while a speaker keeps talking —
