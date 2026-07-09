@@ -51,6 +51,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 async function postMeeting(payload) {
+  // Defense-in-depth against the content script's own guard: only POST for
+  // real meeting codes ("abc-defg-hij"). Meet's homepage path is "/landing",
+  // which a stale pre-guard content script can still report — that's how a
+  // phantom empty meeting named "landing" ended up on the dashboard.
+  if (!/^[a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4}$/i.test(payload.meeting_id || '')) {
+    console.log(`[execution-agent] skipping POST — "${payload.meeting_id}" is not a meeting code`);
+    return;
+  }
   try {
     await fetch(BACKEND_URL, {
       method: 'POST',

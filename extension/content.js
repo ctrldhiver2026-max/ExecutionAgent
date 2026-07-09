@@ -6,6 +6,15 @@
 // obfuscated-class lookups isolated to small helper functions.
 
 (() => {
+  // Only real meeting URLs count. The content script matches all of
+  // meet.google.com/*, which includes Meet's HOME page — whose path is
+  // literally "/landing" — so without this guard, opening/closing the Meet
+  // homepage posts a phantom empty meeting named "landing" via the
+  // background worker's tab-close fallback (seen live 2026-07-09).
+  const MEET_CODE_PATTERN = /^[a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4}$/i;
+  const pathId = location.pathname.replace(/^\/+/, '').split('/')[0].split('?')[0];
+  if (!MEET_CODE_PATTERN.test(pathId)) return; // not a meeting page — do nothing at all
+
   const CAPTIONS_REGION_SELECTOR = '[role="region"][aria-label="Captions"]';
   const CAPTION_LINE_SELECTOR = ':scope > div';
   // .adE6rb wraps an avatar <img>, sometimes an icon <div> (rendered as
