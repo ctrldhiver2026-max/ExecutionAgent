@@ -81,10 +81,13 @@ already sends that value as `x-ingest-token` (see `extension/background.js`).
 ## Calendar watcher setup (pipeline step 2: invite → soft notification)
 
 `api/calendar/poll.js` reads upcoming events on the shared Google Calendar and
-posts a one-time Slack notification per newly scheduled Meet-linked meeting.
-GitHub Actions triggers it every ~5 min (`.github/workflows/calendar-poll.yml`;
-Vercel Hobby only allows daily crons). All demo meetings must be scheduled
-from the shared `ctrldhiver2026@gmail.com` account's calendar.
+DMs each invitee directly — resolved from their real calendar email via the
+same zero-touch Slack lookup the rest of the pipeline uses (`lib/roster.js`),
+no shared channel to create or invite the bot into. GitHub Actions triggers
+it every ~5 min (`.github/workflows/calendar-poll.yml`; Vercel Hobby only
+allows daily crons). All demo meetings must be scheduled from the shared
+`ctrldhiver2026@gmail.com` account's calendar. Picked-up meetings also show
+up on the dashboard's **Upcoming** tab before they happen.
 
 **Google credentials (one-time, ~10 min):**
 1. [Google Cloud Console](https://console.cloud.google.com) → new project → enable **Google Calendar API**
@@ -93,13 +96,14 @@ from the shared `ctrldhiver2026@gmail.com` account's calendar.
 4. [OAuth Playground](https://developers.google.com/oauthplayground) → gear icon → "Use your own OAuth credentials" → paste client id/secret → authorize scope `https://www.googleapis.com/auth/calendar.readonly` (as ctrldhiver2026) → exchange for **refresh token**
    - No `refresh_token` in the response? Google only issues it on the *first* authorization — keep the Playground's "Force prompt: consent" on, or revoke the app at myaccount.google.com/permissions and redo
 5. **⚠️ Token expiry:** a consent screen in "Testing" status issues refresh tokens that **expire after 7 days**. Re-mint within 7 days of demo day, or flip publishing status to "In production" (stays unverified — warning on consent is fine — tokens stop expiring). An expired token logs a loud `invalid_grant` error in Vercel logs.
-6. Fill the `GOOGLE_*` + `SLACK_NOTIFY_CHANNEL` env vars (see `.env.example`) in Vercel and redeploy. `SLACK_NOTIFY_CHANNEL` is the channel ID (channel details → bottom) of e.g. `#execution-agent-feed` — invite the bot to that channel.
+6. Fill the `GOOGLE_*` env vars (see `.env.example`) in Vercel and redeploy. `SLACK_NOTIFY_CHANNEL` is optional — only needed if you *also* want a summary posted to a shared channel; DMs to actual invitees work without it.
 7. Run the `calendar_notifications` SQL above in Supabase.
 
-**Test:** create a calendar event with a Meet link for later today, then
-`curl -X POST https://execution-agent.vercel.app/api/calendar/poll` — the
-Slack message lands in the channel; counts (`upcoming/fresh/sent`) are in the
-Vercel function logs.
+**Test:** create a calendar event with a Meet link, invite people using their
+real emails, then `curl -X POST https://execution-agent.vercel.app/api/calendar/poll`
+— each invitee with a matching Slack account gets a DM; counts (`dmsSent`)
+are in the Vercel function logs. The event also appears on the dashboard's
+Upcoming tab.
 
 **Optional lockdown:** set `POLL_SECRET` in Vercel **and** the identical value
 as a GitHub Actions secret named `POLL_SECRET` — strictly both-or-neither.

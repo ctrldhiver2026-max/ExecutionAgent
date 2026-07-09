@@ -388,11 +388,21 @@
   </header>
 
   <div class="tabs">
+    <button type="button" class="tab-btn" id="tab-btn-upcoming">Upcoming</button>
     <button type="button" class="tab-btn active" id="tab-btn-meetings">Meetings</button>
     <button type="button" class="tab-btn" id="tab-btn-people">People</button>
   </div>
 
   <div class="error-banner" id="error-banner"></div>
+
+  <div class="tab-panel" id="tab-panel-upcoming">
+    <div id="upcoming-content">
+      <div class="state" id="upcoming-loading-state">
+        <div class="state-icon">⏳</div>
+        <p>Loading upcoming meetings…</p>
+      </div>
+    </div>
+  </div>
 
   <div class="tab-panel active" id="tab-panel-meetings">
     <div id="content">
@@ -425,6 +435,7 @@
   var API_URL = isDeployed ? "/api/meetings/list" : "https://execution-agent.vercel.app/api/meetings/list";
   var ROSTER_LIST_URL = isDeployed ? "/api/roster/list" : "https://execution-agent.vercel.app/api/roster/list";
   var ROSTER_UPDATE_URL = isDeployed ? "/api/roster/update" : "https://execution-agent.vercel.app/api/roster/update";
+  var UPCOMING_URL = isDeployed ? "/api/calendar/upcoming" : "https://execution-agent.vercel.app/api/calendar/upcoming";
 
   var contentEl = document.getElementById("content");
   var errorBanner = document.getElementById("error-banner");
@@ -790,6 +801,70 @@
       });
   }
 
+  // ---------- Upcoming (calendar invites, picked up before the meeting happens) ----------
+
+  var upcomingContentEl = document.getElementById("upcoming-content");
+  var upcomingLoaded = false;
+
+  function setUpcomingContent(node) {
+    while (upcomingContentEl.firstChild) upcomingContentEl.removeChild(upcomingContentEl.firstChild);
+    upcomingContentEl.appendChild(node);
+  }
+
+  function renderUpcomingEmpty() {
+    var box = el("div", "state");
+    box.appendChild(el("div", "state-icon", "🗓️"));
+    box.appendChild(el("p", null, "No upcoming meetings picked up yet — schedule a Google Calendar invite with a Meet link and it'll show up here (checked every ~5 minutes)."));
+    return box;
+  }
+
+  function renderUpcomingError(message) {
+    var box = el("div", "state");
+    box.appendChild(el("div", "state-icon", "⚠️"));
+    box.appendChild(el("p", null, "Could not load upcoming meetings: " + asString(message)));
+    return box;
+  }
+
+  function renderUpcomingList(events) {
+    var container = el("div", "meetings");
+    events.forEach(function (ev) {
+      if (!ev || typeof ev !== "object") return;
+      var card = el("article", "card");
+      var head = el("div", "card-head");
+      head.appendChild(el("h2", "card-title", nonEmpty(ev.title) ? ev.title : "(untitled meeting)"));
+      var time = el("span", "card-time", formatRelative(ev.notified_at));
+      time.title = "Notified " + formatFull(ev.notified_at);
+      head.appendChild(time);
+      card.appendChild(head);
+
+      if (nonEmpty(ev.start_at)) {
+        var when = el("div", "due-line");
+        when.appendChild(el("span", "due-label", "When:"));
+        when.appendChild(document.createTextNode(formatFull(ev.start_at)));
+        card.appendChild(when);
+      }
+      container.appendChild(card);
+    });
+    return container;
+  }
+
+  function refreshUpcoming() {
+    fetch(UPCOMING_URL, { headers: { "Accept": "application/json" }, cache: "no-store" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status + " " + res.statusText);
+        return res.json();
+      })
+      .then(function (data) {
+        var events = (data && Array.isArray(data.events)) ? data.events : [];
+        upcomingLoaded = true;
+        setUpcomingContent(events.length === 0 ? renderUpcomingEmpty() : renderUpcomingList(events));
+      })
+      .catch(function (err) {
+        var message = (err && err.message) ? err.message : String(err);
+        setUpcomingContent(renderUpcomingError(message));
+      });
+  }
+
   // ---------- Fetch loop ----------
 
   function refresh() {
@@ -836,24 +911,28 @@
 
   // ---------- Tabs ----------
 
-  var tabBtnMeetings = document.getElementById("tab-btn-meetings");
-  var tabBtnPeople = document.getElementById("tab-btn-people");
-  var tabPanelMeetings = document.getElementById("tab-panel-meetings");
-  var tabPanelPeople = document.getElementById("tab-panel-people");
+  var tabs = {
+    upcoming: { btn: document.getElementById("tab-btn-upcoming"), panel: document.getElementById("tab-panel-upcoming") },
+    meetings: { btn: document.getElementById("tab-btn-meetings"), panel: document.getElementById("tab-panel-meetings") },
+    people: { btn: document.getElementById("tab-btn-people"), panel: document.getElementById("tab-panel-people") },
+  };
 
   function showTab(name) {
-    var meetingsActive = name === "meetings";
-    tabBtnMeetings.classList.toggle("active", meetingsActive);
-    tabBtnPeople.classList.toggle("active", !meetingsActive);
-    tabPanelMeetings.classList.toggle("active", meetingsActive);
-    tabPanelPeople.classList.toggle("active", !meetingsActive);
-    if (!meetingsActive && !peopleLoaded) refreshPeople();
+    Object.keys(tabs).forEach(function (key) {
+      var active = key === name;
+      tabs[key].btn.classList.toggle("active", active);
+      tabs[key].panel.classList.toggle("active", active);
+    });
+    if (name === "people" && !peopleLoaded) refreshPeople();
+    if (name === "upcoming" && !upcomingLoaded) refreshUpcoming();
   }
 
-  tabBtnMeetings.addEventListener("click", function () { showTab("meetings"); });
-  tabBtnPeople.addEventListener("click", function () { showTab("people"); });
+  Object.keys(tabs).forEach(function (key) {
+    tabs[key].btn.addEventListener("click", function () { showTab(key); });
+  });
 
   setInterval(refreshPeople, REFRESH_MS);
+  setInterval(refreshUpcoming, REFRESH_MS);
 })();
 </script>
 </body>

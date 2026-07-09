@@ -1,11 +1,12 @@
 // Calendar watcher (pipeline step: manager schedules a call → Execution
-// Agent reads the invite → soft notification in Slack).
-// Reads upcoming events on the shared Google Calendar and sends a one-time
-// notification for each newly scheduled meeting that has a Meet link.
-// Triggered every ~5 minutes by GitHub Actions (.github/workflows/
-// calendar-poll.yml); also callable manually for testing.
+// Agent reads the invite → soft notification). DMs each invitee directly —
+// resolved from their real calendar email via the same zero-touch Slack
+// lookup the rest of the pipeline uses (lib/roster.js) — no shared channel
+// to create or invite the bot into. Triggered every ~5 minutes by GitHub
+// Actions (.github/workflows/calendar-poll.yml); also callable manually.
 import { listUpcomingEvents } from "../../lib/google.js";
-import { postMessage } from "../../lib/slack.js";
+import { postMessage, notifyUpcomingMeeting } from "../../lib/slack.js";
+import { getOrCreateAttendeeIdentity } from "../../lib/roster.js";
 import { getNotifiedEventIds, markEventNotified, unmarkEventNotified } from "../../lib/db.js";
 
 const LOOKAHEAD_MINUTES = 24 * 60;
@@ -23,9 +24,8 @@ function formatStart(iso) {
   }
 }
 
-function notificationText(event) {
-  const invitees =
-    event.attendees.map((a) => a.name || a.email).join(", ") || "no invitees listed";
+function channelNotificationText(event) {
+  const invitees = event.attendees.map((a) => a.name || a.email).join(", ") || "no invitees listed";
   return [
     `📅 *New meeting scheduled:* ${event.title}`,
     `*When:* ${formatStart(event.start)} IST`,
@@ -51,26 +51,18 @@ export default async function handler(req, res) {
     return;
   }
 
-  const channel = process.env.SLACK_NOTIFY_CHANNEL;
+  // Optional bonus: also post a summary to a shared channel, if one's set up.
+  // Not required — DMs to actual invitees (below) are the primary path.
+  const bonusChannel = process.env.SLACK_NOTIFY_CHANNEL;
 
   try {
     const events = await listUpcomingEvents(LOOKAHEAD_MINUTES);
     const meetings = events.filter((e) => e.meetCode || e.meetLink);
 
-    if (!channel) {
-      // Don't mark anything notified before notifications can actually go
-      // out — once the channel is configured, the backlog gets announced.
-      console.log(
-        `[calendar/poll] SLACK_NOTIFY_CHANNEL not set — found ${meetings.length} upcoming meeting(s), notifying nothing`
-      );
-      res.status(200).json({ ok: true });
-      return;
-    }
-
     const alreadyNotified = await getNotifiedEventIds();
     const fresh = meetings.filter((e) => !alreadyNotified.has(e.id));
 
-    let sent = 0;
+    let dmsSent = 0;
     for (const event of fresh) {
       // Mark first: event_id is the primary key, so if two polls race the
       // second insert throws here and we never double-notify.
@@ -80,22 +72,44 @@ export default async function handler(req, res) {
         console.error(`[calendar/poll] dedup mark failed for event ${event.id} (likely a concurrent poll)`, err);
         continue;
       }
+
       try {
-        await postMessage(channel, notificationText(event));
-        sent += 1;
+        const whenText = `${formatStart(event.start)} IST`;
+        const attendeesWithEmail = (event.attendees || []).filter((a) => a.email);
+        const identities = await Promise.all(
+          attendeesWithEmail.map((a) => getOrCreateAttendeeIdentity({ email: a.email, name: a.name }))
+        );
+        const notifiable = identities.filter((p) => p.slack_id);
+
+        for (const person of notifiable) {
+          try {
+            await notifyUpcomingMeeting(person.slack_id, { title: event.title, whenText });
+            dmsSent += 1;
+          } catch (err) {
+            // One person's DM failing shouldn't sink the rest of the invitees.
+            console.error(`[calendar/poll] DM failed for ${person.name} (non-fatal)`, err);
+          }
+        }
+        if (notifiable.length === 0) {
+          console.log(`[calendar/poll] no Slack-linked invitees found for "${event.title}" — nobody to DM`);
+        }
+
+        if (bonusChannel) {
+          await postMessage(bonusChannel, channelNotificationText(event)).catch((err) =>
+            console.error("[calendar/poll] bonus channel post failed (non-fatal)", err)
+          );
+        }
       } catch (err) {
-        // Slack failed (wrong channel id, bot not invited, outage) — roll the
-        // mark back so the next poll retries instead of losing the event forever.
-        console.error(`[calendar/poll] Slack notify failed for event ${event.id}`, err);
+        // Resolution itself broke (not just one person's DM) — roll the mark
+        // back so the next poll retries this event properly.
+        console.error(`[calendar/poll] notify failed for event ${event.id}`, err);
         await unmarkEventNotified(event.id).catch((rollbackErr) =>
           console.error(`[calendar/poll] rollback failed for event ${event.id}`, rollbackErr)
         );
       }
     }
 
-    console.log(`[calendar/poll] upcoming=${meetings.length} fresh=${fresh.length} sent=${sent}`);
-    // Counts stay in the server log — no need to disclose meeting metadata
-    // to unauthenticated callers.
+    console.log(`[calendar/poll] upcoming=${meetings.length} fresh=${fresh.length} dmsSent=${dmsSent}`);
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error("[calendar/poll] failed", err);
