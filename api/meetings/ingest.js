@@ -80,6 +80,7 @@ async function triggerConfirmation({ meeting_id, extracted, attendees }) {
       project_name: extracted.project_name,
       deliverables: extracted.deliverables || [],
       due_dates: extracted.due_dates,
+      project_due_date: extracted.project_due_date,
       attendees: resolvedAttendees,
     };
     const confirmation = await createPendingConfirmation(project);

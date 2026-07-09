@@ -369,6 +369,7 @@
   }
   tr:last-child td { border-bottom: none; }
   td.owner-cell { color: var(--text-dim); }
+  td.due-cell { color: var(--text-dim); white-space: nowrap; }
   th.team-col, td.team-cell { width: 110px; white-space: nowrap; }
 
   .team-badge {
@@ -762,6 +763,7 @@
     headRow.appendChild(el("th", "team-col", "Team"));
     headRow.appendChild(el("th", null, "Task"));
     headRow.appendChild(el("th", null, "Owner"));
+    headRow.appendChild(el("th", null, "Due"));
     thead.appendChild(headRow);
     table.appendChild(thead);
 
@@ -774,6 +776,7 @@
       tr.appendChild(tdTeam);
       tr.appendChild(el("td", null, nonEmpty(d.task) ? d.task : "—"));
       tr.appendChild(el("td", "owner-cell", nonEmpty(d.owner_name) ? d.owner_name : "—"));
+      tr.appendChild(el("td", "due-cell", nonEmpty(d.due_date) ? d.due_date : "—"));
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
