@@ -1,0 +1,19 @@
+# Triggers the calendar watcher every ~5 minutes (GitHub cron is best-effort —
+# expect occasional multi-minute delays; fine for soft notifications).
+# Vercel's Hobby plan only allows daily crons, hence GitHub as the scheduler.
+name: Calendar poll
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit the poll endpoint
+        run: |
+          curl -fsS -X POST \
+            -H "x-poll-token: ${{ secrets.POLL_SECRET }}" \
+            https://execution-agent.vercel.app/api/calendar/poll

@@ -30,8 +30,11 @@ lib/orchestrator.js         Post-confirmation flow; Charan's stubs clearly marke
 ```sql
 create table pending_confirmations (
   id uuid primary key default gen_random_uuid(),
-  payload jsonb not null,
+  meeting_id text,
+  project_name text not null,
+  extracted_json jsonb not null,
   status text not null default 'pending', -- pending | confirmed | rejected
+  slack_thread_ts text,
   created_at timestamptz default now()
 );
 
@@ -40,6 +43,7 @@ create table projects (
   meeting_id text,
   project_name text,
   clickup_task_id text,
+  clickup_url text,
   slack_channel_id text,
   created_at timestamptz default now()
 );
@@ -55,11 +59,49 @@ create table meetings (
   extracted jsonb,
   created_at timestamptz default now()
 );
+
+-- Calendar watcher dedup: one row per calendar event we've announced, so a
+-- meeting is never notified twice (event_id PK doubles as the race guard).
+create table calendar_notifications (
+  event_id text primary key,
+  title text,
+  start_at timestamptz,
+  notified_at timestamptz default now()
+);
 ```
 
 **Optional ingest lockdown:** `/api/meetings/ingest` is public. To require auth,
 set `INGEST_SECRET=ctrld-hiver-2026-ingest` in Vercel env vars — the extension
 already sends that value as `x-ingest-token` (see `extension/background.js`).
+
+## Calendar watcher setup (pipeline step 2: invite → soft notification)
+
+`api/calendar/poll.js` reads upcoming events on the shared Google Calendar and
+posts a one-time Slack notification per newly scheduled Meet-linked meeting.
+GitHub Actions triggers it every ~5 min (`.github/workflows/calendar-poll.yml`;
+Vercel Hobby only allows daily crons). All demo meetings must be scheduled
+from the shared `ctrldhiver2026@gmail.com` account's calendar.
+
+**Google credentials (one-time, ~10 min):**
+1. [Google Cloud Console](https://console.cloud.google.com) → new project → enable **Google Calendar API**
+2. OAuth consent screen → External → add ctrldhiver2026@gmail.com as test user
+3. Credentials → OAuth client ID → **Web application** → redirect URI `https://developers.google.com/oauthplayground`
+4. [OAuth Playground](https://developers.google.com/oauthplayground) → gear icon → "Use your own OAuth credentials" → paste client id/secret → authorize scope `https://www.googleapis.com/auth/calendar.readonly` (as ctrldhiver2026) → exchange for **refresh token**
+   - No `refresh_token` in the response? Google only issues it on the *first* authorization — keep the Playground's "Force prompt: consent" on, or revoke the app at myaccount.google.com/permissions and redo
+5. **⚠️ Token expiry:** a consent screen in "Testing" status issues refresh tokens that **expire after 7 days**. Re-mint within 7 days of demo day, or flip publishing status to "In production" (stays unverified — warning on consent is fine — tokens stop expiring). An expired token logs a loud `invalid_grant` error in Vercel logs.
+6. Fill the `GOOGLE_*` + `SLACK_NOTIFY_CHANNEL` env vars (see `.env.example`) in Vercel and redeploy. `SLACK_NOTIFY_CHANNEL` is the channel ID (channel details → bottom) of e.g. `#execution-agent-feed` — invite the bot to that channel.
+7. Run the `calendar_notifications` SQL above in Supabase.
+
+**Test:** create a calendar event with a Meet link for later today, then
+`curl -X POST https://execution-agent.vercel.app/api/calendar/poll` — the
+Slack message lands in the channel; counts (`upcoming/fresh/sent`) are in the
+Vercel function logs.
+
+**Optional lockdown:** set `POLL_SECRET` in Vercel **and** the identical value
+as a GitHub Actions secret named `POLL_SECRET` — strictly both-or-neither.
+Only Vercel set → every cron run 401s (workflow shows red ✗ every 5 min).
+Only GitHub set → the endpoint silently stays open while the workflow looks
+locked down.
 
 ## 3. Solo test (Phase 1–2, no extension/extraction needed)
 
