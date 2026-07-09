@@ -155,6 +155,42 @@
     white-space: normal;
   }
 
+  .side-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 4px 6px 8px;
+  }
+  .side-label-row .side-label { padding: 0; }
+  .clear-all-btn {
+    background: none;
+    border: none;
+    color: var(--text-faint);
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 5px;
+  }
+  .clear-all-btn:hover { color: var(--red); background: rgba(207, 34, 46, 0.08); }
+
+  .side-item-row { display: flex; align-items: center; gap: 2px; }
+  .side-item-row .side-item { flex: 1; min-width: 0; }
+  .side-delete {
+    background: none;
+    border: none;
+    color: var(--text-faint);
+    cursor: pointer;
+    font-size: 0.82rem;
+    padding: 4px 7px;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+  .side-delete:hover { color: var(--red); background: rgba(207, 34, 46, 0.08); }
+
   .side-footer {
     border-top: 1px solid var(--border);
     padding: 12px 14px;
@@ -514,7 +550,10 @@
 
     <div class="side-scroll">
       <div class="side-group">
-        <div class="side-label">Projects</div>
+        <div class="side-label-row">
+          <div class="side-label">Projects</div>
+          <button type="button" class="clear-all-btn" id="clear-all-btn">Clear all</button>
+        </div>
         <div id="project-list">
           <div class="side-empty">Loading…</div>
         </div>
@@ -570,6 +609,7 @@
   var ROSTER_UPDATE_URL = BASE + "/api/roster/update";
   var UPCOMING_URL = BASE + "/api/calendar/upcoming";
   var PIPELINE_URL = BASE + "/api/pipeline/status";
+  var DELETE_URL = BASE + "/api/meetings/delete";
 
   var mainContentEl = document.getElementById("main-content");
   var projectListEl = document.getElementById("project-list");
@@ -579,6 +619,7 @@
   var refreshDot = document.getElementById("refresh-dot");
   var refreshText = document.getElementById("refresh-text");
   var peopleBtn = document.getElementById("people-btn");
+  var clearAllBtn = document.getElementById("clear-all-btn");
 
   var meetings = [];          // last good fetch
   var roster = [];
@@ -662,6 +703,8 @@
     meetings.forEach(function (m) {
       if (!m || typeof m !== "object") return;
       var key = meetingKey(m);
+      var row = el("div", "side-item-row");
+
       var btn = el("button", "side-item" + (view === "project" && key === selectedKey ? " active" : ""));
       btn.type = "button";
       btn.appendChild(document.createTextNode(meetingTitle(m)));
@@ -671,7 +714,18 @@
         view = "project";
         renderAll();
       });
-      projectListEl.appendChild(btn);
+      row.appendChild(btn);
+
+      var del = el("button", "side-delete", "✕");
+      del.type = "button";
+      del.title = "Delete this meeting";
+      del.addEventListener("click", function (e) {
+        e.stopPropagation();
+        deleteMeetingCard(m);
+      });
+      row.appendChild(del);
+
+      projectListEl.appendChild(row);
     });
   }
 
@@ -1224,7 +1278,44 @@
       });
   }
 
+  // ---------- Delete ----------
+
+  function postDelete(body) {
+    return fetch(DELETE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    });
+  }
+
+  function deleteMeetingCard(m) {
+    var label = meetingTitle(m);
+    if (!window.confirm('Delete "' + label + '"? This also removes its Slack/ClickUp project record.')) return;
+    postDelete({ id: m.id, meeting_id: m.meeting_id })
+      .then(refreshMeetings)
+      .catch(function (err) {
+        window.alert("Failed to delete: " + ((err && err.message) || err));
+      });
+  }
+
+  function clearAllMeetings() {
+    if (!window.confirm("Delete ALL projects and their Slack/ClickUp records? This cannot be undone.")) return;
+    postDelete({ all: true })
+      .then(function () {
+        selectedKey = null;
+        refreshMeetings();
+      })
+      .catch(function (err) {
+        window.alert("Failed to clear: " + ((err && err.message) || err));
+      });
+  }
+
   // ---------- Wire up ----------
+
+  clearAllBtn.addEventListener("click", clearAllMeetings);
 
   peopleBtn.addEventListener("click", function () {
     view = (view === "people") ? "project" : "people";
