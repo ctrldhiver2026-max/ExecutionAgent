@@ -115,6 +115,19 @@ create table pending_reviews (
   approver_slack_id text not null,
   created_at timestamptz default now()
 );
+
+-- REQUIRED migration (2026-07-10): review-approval flow, part 2. Approved
+-- reviews are no longer deleted (they're kept so the dashboard timeline can
+-- show a "Task completed" entry per approval) and the actual shared
+-- message/link is now captured so it can be posted as a ClickUp comment
+-- instead of the task just silently flipping to done. The code degrades
+-- gracefully if this hasn't run yet (falls back to the old delete-on-approve
+-- behavior, no comment, no timeline entry) — see lib/db.js's
+-- createPendingReview/getLatestPendingReview/completePendingReview/
+-- listCompletedReviews.
+alter table pending_reviews add column if not exists share_text text;
+alter table pending_reviews add column if not exists share_url text;
+alter table pending_reviews add column if not exists completed_at timestamptz;
 ```
 
 **Optional ingest lockdown:** `/api/meetings/ingest` is public. To require auth,

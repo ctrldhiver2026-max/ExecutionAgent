@@ -21,9 +21,9 @@ import {
   getRosterMemberBySlackId,
   createPendingReview,
   getLatestPendingReview,
-  deletePendingReview,
+  completePendingReview,
 } from "../../lib/db.js";
-import { findClickUpMemberIdByEmail, findOpenSubtaskForAssignee, setTaskComplete } from "../../lib/clickup.js";
+import { findClickUpMemberIdByEmail, findOpenSubtaskForAssignee, setTaskComplete, addTaskComment } from "../../lib/clickup.js";
 
 export const config = { api: { bodyParser: false } };
 
@@ -40,6 +40,21 @@ function readRawBody(req) {
 // "<@U0123|name>" or "<@U0123>", and "<https://example.com|label>" or "<https://example.com>".
 const MENTION_RE = /<@([A-Z0-9]+)(?:\|[^>]*)?>/;
 const URL_RE = /<(https?:\/\/[^|>]+)(?:\|[^>]*)?>/;
+// Global variants of the above, for stripping Slack's markup out of a whole
+// message so it reads naturally in a ClickUp comment (ClickUp doesn't
+// understand Slack's <@id>/<url|label> syntax).
+const MENTION_RE_G = /<@([A-Z0-9]+)(?:\|[^>]*)?>/g;
+const URL_RE_G = /<(https?:\/\/[^|>]+)(?:\|[^>]*)?>/g;
+
+function cleanSlackText(text) {
+  return text.replace(MENTION_RE_G, "@$1").replace(URL_RE_G, "$1").trim();
+}
+
+/** Roster display name for a Slack user id, falling back to the raw id if unresolved (e.g. approver was never on a call). Plain text, not Slack mention markup — the only consumer is ClickUp comments, which don't render <@id>. */
+async function displayName(slackId) {
+  const member = await getRosterMemberBySlackId(slackId).catch(() => null);
+  return member?.name || slackId;
+}
 
 // Deliberately short, common phrases — a whole-message match (after
 // stripping punctuation), not a substring search, so a longer sentence that
@@ -55,8 +70,22 @@ function isApprovalMessage(text) {
 }
 
 async function handleApproval(event, pending) {
+  // Leave a record of what was actually reviewed on the ClickUp task itself
+  // — the status flip alone tells nobody what was shared or who signed off.
+  // Non-fatal: a comment failure shouldn't block marking the task done.
+  const [approverName, assigneeName] = await Promise.all([
+    displayName(event.user),
+    pending.assignee_slack_id ? displayName(pending.assignee_slack_id) : null,
+  ]);
+  const commentLines = [`Approved via Slack by ${approverName}.`];
+  if (pending.share_text) commentLines.push(`Shared${assigneeName ? ` by ${assigneeName}` : ""}: ${pending.share_text}`);
+  if (pending.share_url) commentLines.push(`Link: ${pending.share_url}`);
+  await addTaskComment(pending.subtask_id, commentLines.join("\n")).catch((err) =>
+    console.error(`[slack/events] ClickUp comment failed for subtask ${pending.subtask_id} (non-fatal)`, err)
+  );
+
   await setTaskComplete(pending.subtask_id);
-  await deletePendingReview(pending.id);
+  await completePendingReview(pending.id);
   await postMessage(
     event.channel,
     `"${pending.subtask_name}" approved`,
@@ -97,12 +126,20 @@ async function handleReviewRequest(event) {
   }
 
   const approverSlackId = mentionMatch[1];
+  // cleanSlackText alone leaves the approver's mention as a raw Slack id
+  // ("@U0123") since it has no roster access — swap in their resolved name
+  // so the eventual ClickUp comment reads naturally. Any other/unresolved
+  // mentions in the message still fall back to the raw id, which is fine.
+  const approverName = await displayName(approverSlackId);
+  const shareText = cleanSlackText(event.text).replace(`@${approverSlackId}`, `@${approverName}`);
   await createPendingReview({
     channel_id: event.channel,
     subtask_id: subtask.id,
     subtask_name: subtask.name,
     assignee_slack_id: event.user,
     approver_slack_id: approverSlackId,
+    share_text: shareText,
+    share_url: urlMatch[1],
   });
   await postMessage(
     event.channel,

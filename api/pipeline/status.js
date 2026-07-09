@@ -11,7 +11,7 @@
 //        live from ClickUp (never stored — always current).
 //   POST { meeting_id, held_by_id }          -> set the project's manually-
 //        picked owner/DRI (roster id, or null to unset).
-import { listPendingConfirmations, listProjects, updateProjectHeldBy } from "../../lib/db.js";
+import { listPendingConfirmations, listProjects, updateProjectHeldBy, listCompletedReviews } from "../../lib/db.js";
 import { getProjectLiveStatus } from "../../lib/clickup.js";
 
 export default async function handler(req, res) {
@@ -64,11 +64,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [confirmations, projects] = await Promise.all([
+    const [confirmations, projects, reviews] = await Promise.all([
       listPendingConfirmations(50),
       listProjects(50),
+      listCompletedReviews(100),
     ]);
-    res.status(200).json({ confirmations, projects });
+    res.status(200).json({ confirmations, projects, reviews });
   } catch (err) {
     // Full detail stays server-side — the rest() error text includes raw
     // PostgREST responses, which must not reach unauthenticated clients.

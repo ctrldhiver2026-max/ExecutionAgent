@@ -698,7 +698,7 @@
 
   var meetings = [];          // last good fetch
   var roster = [];
-  var pipeline = { confirmations: [], projects: [], loaded: false, error: false };
+  var pipeline = { confirmations: [], projects: [], reviews: [], loaded: false, error: false };
   var selectedKey = null;     // key of the selected meeting
   var view = "project";       // "project" | "people"
   var hasRenderedData = false;
@@ -1001,6 +1001,14 @@
     return null;
   }
 
+  function nameForSlackId(slackId) {
+    if (!nonEmpty(slackId)) return "someone";
+    for (var i = 0; i < roster.length; i++) {
+      if (roster[i] && roster[i].slack_id === slackId) return roster[i].name || slackId;
+    }
+    return slackId;
+  }
+
   function buildTimeline(m) {
     var extracted = (m.extracted && typeof m.extracted === "object") ? m.extracted : null;
     var conf = latestByMeetingId(pipeline.confirmations, asString(m.meeting_id));
@@ -1097,6 +1105,25 @@
         title: "Team notified",
         desc: stopped ? "—" : "Kickoff message with assigned owners.",
       });
+    }
+
+    // 5. Review-approvals (one entry per deliverable approved via the plain-
+    // text Slack review flow) — oldest first so it reads chronologically
+    // alongside the steps above, which are already in pipeline order.
+    if (proj && nonEmpty(proj.slack_channel_id)) {
+      (pipeline.reviews || [])
+        .filter(function (r) { return r && r.channel_id === proj.slack_channel_id; })
+        .slice()
+        .reverse()
+        .forEach(function (r) {
+          steps.push({
+            state: "done",
+            title: "Task completed",
+            desc: "“" + r.subtask_name + "” approved by " + nameForSlackId(r.approver_slack_id),
+            link: nonEmpty(r.share_url) ? { href: r.share_url, label: "View shared link →" } : null,
+            time: r.completed_at,
+          });
+        });
     }
 
     return steps;
@@ -1517,6 +1544,7 @@
       .then(function (data) {
         pipeline.confirmations = (data && Array.isArray(data.confirmations)) ? data.confirmations : [];
         pipeline.projects = (data && Array.isArray(data.projects)) ? data.projects : [];
+        pipeline.reviews = (data && Array.isArray(data.reviews)) ? data.reviews : [];
         pipeline.loaded = true;
         pipeline.error = false;
         renderRail(selectedMeeting());
