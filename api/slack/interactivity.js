@@ -33,6 +33,15 @@ export default async function handler(req, res) {
   const action = payload.actions?.[0];
   if (!action) return res.status(200).end();
 
+  // Slack retries the same interaction if it doesn't get a response in
+  // time (marked with this header). Since we now await the full flow
+  // before responding, a slow-but-still-in-progress first attempt could
+  // get retried — ack without reprocessing so we don't double-create the
+  // channel/ticket/DB row.
+  if (req.headers["x-slack-retry-num"]) {
+    return res.status(200).end();
+  }
+
   // ── DO THE WORK, THEN ACK ────────────────────────────────────────────
   // Slack requires a response within 3s. We used to ack first and keep
   // working after res.end() — on Vercel's Fluid compute the invocation
