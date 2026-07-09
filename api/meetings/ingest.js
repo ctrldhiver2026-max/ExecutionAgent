@@ -38,13 +38,14 @@ async function triggerConfirmation({ meeting_id, extracted, attendees }) {
   }
 
   let initiatorSlackId = null;
+  let calendarEvent = null;
   try {
-    const event = await findEventByMeetCode(meeting_id);
-    if (event?.organizer) {
-      const organizer = await findRosterMemberByEmail(event.organizer);
+    calendarEvent = await findEventByMeetCode(meeting_id);
+    if (calendarEvent?.organizer) {
+      const organizer = await findRosterMemberByEmail(calendarEvent.organizer);
       initiatorSlackId = organizer?.slack_id || null;
       if (!initiatorSlackId) {
-        console.log(`[meetings/ingest] calendar organizer ${event.organizer} has no roster match`);
+        console.log(`[meetings/ingest] calendar organizer ${calendarEvent.organizer} has no roster match`);
       }
     } else {
       console.log(`[meetings/ingest] no calendar event found for meet code ${meeting_id}`);
@@ -60,7 +61,9 @@ async function triggerConfirmation({ meeting_id, extracted, attendees }) {
   }
 
   try {
-    const resolvedAttendees = await resolveAttendees(attendees);
+    // Calendar attendees (real emails from the invite) back up name-matching
+    // when a captured Meet display name doesn't exactly match the roster.
+    const resolvedAttendees = await resolveAttendees(attendees, calendarEvent?.attendees || []);
     const project = {
       meeting_id,
       project_name: extracted.project_name,
