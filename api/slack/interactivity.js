@@ -2,9 +2,10 @@
 // Slack Interactivity Request URL → https://execution-agent.vercel.app/api/slack/interactivity
 // Slack sends button clicks here as application/x-www-form-urlencoded with a `payload` field.
 
-import { verifySlackSignature, slackApi } from "../../lib/slack.js";
+import { verifySlackSignature, slackApi, postMessage, openDm } from "../../lib/slack.js";
 import { getPendingConfirmation, updateConfirmationStatus } from "../../lib/db.js";
 import { runProjectCreation } from "../../lib/orchestrator.js";
+import { setTaskComplete } from "../../lib/clickup.js";
 
 // Vercel: disable body parsing so we can verify the raw body signature.
 export const config = { api: { bodyParser: false } };
@@ -83,6 +84,34 @@ export default async function handler(req, res) {
       return res.status(200).end();
     }
 
+    if (action.action_id === "approve_deliverable" || action.action_id === "reject_deliverable") {
+      const [subtaskId, assigneeSlackId, approverSlackId, taskName] = action.value.split("|");
+      const clicker = payload.user?.id;
+
+      // Anyone in the channel can see the buttons, but only the person
+      // named in the review request should be able to answer it — silent
+      // to everyone else (ephemeral, so it doesn't clutter the channel).
+      if (clicker !== approverSlackId) {
+        await postEphemeral(payload, `Only <@${approverSlackId}> can respond to this review request.`);
+        return res.status(200).end();
+      }
+
+      if (action.action_id === "approve_deliverable") {
+        await setTaskComplete(subtaskId);
+        await replaceMessage(payload, `:white_check_mark: *${taskName}* approved by <@${clicker}> — marked complete.`);
+      } else {
+        await replaceMessage(payload, `:x: *${taskName}* not approved yet by <@${clicker}>.`);
+        // No ClickUp status change — just let the assignee know so they can follow up.
+        try {
+          const dm = await openDm(assigneeSlackId);
+          await postMessage(dm, `Your update on "${taskName}" wasn't approved yet by <@${approverSlackId}> — check the channel for context.`);
+        } catch (err) {
+          console.error("[interactivity] rejection DM to assignee failed (non-fatal)", err);
+        }
+      }
+      return res.status(200).end();
+    }
+
     return res.status(200).end();
   } catch (err) {
     console.error("Interactivity handler error:", err);
@@ -100,5 +129,14 @@ async function replaceMessage(payload, text) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ replace_original: true, text }),
+  });
+}
+
+/** Reply visible only to the clicker — used to rebuff someone who isn't the named approver, without cluttering the channel for everyone else. */
+async function postEphemeral(payload, text) {
+  await fetch(payload.response_url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ response_type: "ephemeral", replace_original: false, text }),
   });
 }

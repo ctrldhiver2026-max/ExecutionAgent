@@ -20,11 +20,15 @@ lib/google.js                Calendar OAuth + event lookup (watcher + organizer 
 
 1. **OAuth & Permissions → Bot Token Scopes:** `channels:manage`, `chat:write`, `users:read`, plus `im:write` (needed for `conversations.open` to DM people) and `mpim:write` if you ever DM groups.
    - **`users:read.email` — required** for zero-touch attendee mapping (`lib/roster.js` / `users.lookupByEmail`): turns a calendar invite's email straight into a Slack ID with no manual entry anywhere. Without this scope, new attendees get discovered but never get invited to the channel or DMed — add the scope, then **Reinstall to Workspace** (required after any scope change) for it to take effect.
+   - **`channels:history` — required (2026-07-10)** for the review-approval flow (`api/slack/events.js`): the bot needs to read messages posted in a project channel to detect "@approver here's the link" and prompt for approval. Without it, Slack simply never sends `message.channels` events to your Request URL.
 2. **Interactivity & Shortcuts → ON**, Request URL:
    `https://execution-agent.vercel.app/api/slack/interactivity`
-3. **Event Subscriptions → ON** (optional for now), Request URL:
+3. **Event Subscriptions → ON**, Request URL:
    `https://execution-agent.vercel.app/api/slack/events`
    — deploy first, Slack pings the URL with a challenge on save.
+   Subscribe to bot event **`message.channels`** (required for the
+   review-approval flow above — without this subscription, `channels:history`
+   alone does nothing since Slack never pushes the events).
 4. **Install App to Workspace** → copy the Bot User OAuth Token (`xoxb-…`).
 5. **Basic Information → Signing Secret** → copy.
 6. Add both to `.env` locally and Vercel → Settings → Environment Variables.
@@ -172,6 +176,28 @@ match, or `MANAGER_SLACK_ID` as a fallback) and sends them the confirm DM.
 `lib/roster.js` and `lib/clickup.js` are the real (non-stub) role-resolution
 and ClickUp integrations — see their file-header comments for the exact
 contract each function follows.
+
+## 5. Review-approval flow (deliverable done → reviewer approves → ClickUp closes)
+
+No slash command, no button to kick it off — an assignee just posts a plain
+message in their project's channel mentioning whoever should review it, with
+a link: `@mansoor here's the landing page, please review: <figma link>`.
+
+`api/slack/events.js` watches every message in every tracked project channel
+for that shape (a mention + a URL). If it finds one, it identifies the
+sender's ClickUp assignment in that project (matched by email, same
+zero-touch identity resolution the rest of the pipeline uses) and — only if
+they have **exactly one** open subtask there — posts a Yes/No "Is this
+final?" prompt aimed at the mentioned person. Ambiguous (2+ open subtasks)
+or unresolvable senders are skipped entirely rather than guessed at.
+
+`api/slack/interactivity.js` handles the buttons: **Yes** sets that subtask
+to the list's closed status via `lib/clickup.js` `setTaskComplete` and edits
+the prompt into a confirmation everyone in the channel sees (that channel
+already has the whole team in it, so no separate notification step is
+needed); **No** edits the prompt to say so and DMs the assignee — no ClickUp
+status change. Only the person named in the original mention can click
+either button; anyone else gets a private (ephemeral) "not for you" reply.
 
 ## Gotchas learned the hard way (read before demo day)
 
