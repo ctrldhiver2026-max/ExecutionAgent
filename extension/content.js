@@ -27,6 +27,20 @@
     return location.pathname.replace(/^\/+/, '').split('?')[0];
   }
 
+  // Seen live: some People-panel rows render a rollup accessibility label
+  // like "Mansoorahamed S & 2 others" instead of the plain name (whatever
+  // Meet DOM state triggers this, it's not present on every call — the
+  // caption-derived speaker names came through clean in the same session).
+  // The real name is always the leading part, so strip the suffix rather
+  // than reject the row outright.
+  function cleanName(raw) {
+    return (raw || '')
+      .trim()
+      .replace(/\s*\(You\)$/, '')
+      .replace(/\s*&\s*\d+\s+others?\s*$/i, '')
+      .trim();
+  }
+
   function captureCaptionLines() {
     const region = document.querySelector(CAPTIONS_REGION_SELECTOR);
     if (!region) return;
@@ -46,7 +60,7 @@
       // Meet captions your own speech as the placeholder "You", not your
       // real name — that's not an identity, so don't count it as one.
       if (speaker !== 'Unknown' && speaker !== 'You') {
-        attendees.add(speaker.replace(/\s*\(You\)$/, ''));
+        attendees.add(cleanName(speaker));
       }
 
       const existingIndex = lineIndexByNode.get(block);
@@ -67,7 +81,7 @@
     // unrelated on-screen text, so we don't use them. Caption speakers
     // (captureCaptionLines) fill the gap when the panel isn't open.
     document.querySelectorAll(PEOPLE_PANEL_ROW_SELECTOR).forEach((el) => {
-      const name = el.getAttribute('aria-label')?.trim().replace(/\s*\(You\)$/, '');
+      const name = cleanName(el.getAttribute('aria-label'));
       if (name) attendees.add(name);
     });
   }
