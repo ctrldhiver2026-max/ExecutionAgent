@@ -2,6 +2,10 @@
 // state per tab and fires the single POST into the pipeline when a meeting ends.
 
 const BACKEND_URL = 'https://execution-agent.vercel.app/api/meetings/ingest';
+// Shared secret matching the INGEST_SECRET env var on Vercel. Only enforced
+// server-side once that env var is set — keeps random internet clients from
+// burning our Claude quota via the public ingest URL.
+const INGEST_TOKEN = 'ctrld-hiver-2026-ingest';
 
 const stateByTab = new Map(); // tabId -> { meetingId, transcript, attendees }
 
@@ -50,7 +54,7 @@ async function postMeeting(payload) {
   try {
     await fetch(BACKEND_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-ingest-token': INGEST_TOKEN },
       body: JSON.stringify(payload),
     });
   } catch (err) {

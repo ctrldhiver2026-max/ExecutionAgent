@@ -96,8 +96,15 @@
     });
   }
 
+  // The Leave-button click AND the post-call-screen observer can both fire —
+  // send MEETING_ENDED exactly once, and stop all capture afterwards so a
+  // later TRANSCRIPT_UPDATE can't re-arm the background worker's tab-close
+  // fallback into posting a duplicate.
+  let endSent = false;
   function handlePotentialEnd() {
+    if (endSent) return;
     if (!isExtensionContextValid()) return teardown();
+    endSent = true;
     chrome.runtime.sendMessage({
       type: 'MEETING_ENDED',
       meetingId: meetingIdFromUrl(),
@@ -105,6 +112,7 @@
       attendees: Array.from(attendees),
       endedAt: new Date().toISOString(),
     });
+    teardown();
   }
 
   // Leave button is semantically labeled — more stable than its obfuscated class.

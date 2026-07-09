@@ -43,7 +43,23 @@ create table projects (
   slack_channel_id text,
   created_at timestamptz default now()
 );
+
+-- Captured meetings (Mansoor's slice): raw transcript + attendees + Claude
+-- extraction output, displayed on the dashboard at the deployment root URL.
+create table meetings (
+  id uuid primary key default gen_random_uuid(),
+  meeting_id text,
+  ended_at timestamptz,
+  attendees jsonb not null default '[]',
+  transcript jsonb not null default '[]',
+  extracted jsonb,
+  created_at timestamptz default now()
+);
 ```
+
+**Optional ingest lockdown:** `/api/meetings/ingest` is public. To require auth,
+set `INGEST_SECRET=ctrld-hiver-2026-ingest` in Vercel env vars — the extension
+already sends that value as `x-ingest-token` (see `extension/background.js`).
 
 ## 3. Solo test (Phase 1–2, no extension/extraction needed)
 

@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Execution Agent</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --surface: #131a22;
+    --surface-2: #1a232e;
+    --border: #24303d;
+    --text: #e6edf3;
+    --text-dim: #8b98a5;
+    --text-faint: #5c6a76;
+    --accent: #4da3ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --amber: #d29922;
+    --chip-bg: #1f2a36;
+    --team-content-bg: rgba(210, 153, 34, 0.15);
+    --team-content-fg: #e3b341;
+    --team-content-bd: rgba(210, 153, 34, 0.4);
+    --team-design-bg: rgba(163, 113, 247, 0.15);
+    --team-design-fg: #bc8cff;
+    --team-design-bd: rgba(163, 113, 247, 0.4);
+    --team-dev-bg: rgba(63, 185, 80, 0.15);
+    --team-dev-fg: #56d364;
+    --team-dev-bd: rgba(63, 185, 80, 0.4);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    min-height: 100vh;
+  }
+
+  .wrap {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 32px 24px 80px;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding-bottom: 24px;
+    margin-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+  }
+  .logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #1f6feb, #4da3ff);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 18px;
+    color: #fff;
+    flex-shrink: 0;
+  }
+  h1 {
+    font-size: 1.45rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+  .count-pill {
+    background: var(--chip-bg);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 999px;
+    padding: 4px 14px;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .count-pill strong { color: var(--text); font-weight: 650; }
+  .refresh {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: var(--text-faint);
+  }
+  .refresh-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    flex-shrink: 0;
+  }
+  .refresh-dot.pulsing { animation: pulse 1.2s ease-in-out infinite; }
+  .refresh-dot.error { background: var(--red); }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.35; transform: scale(0.8); }
+  }
+
+  /* Error banner */
+  .error-banner {
+    display: none;
+    background: rgba(248, 81, 73, 0.1);
+    border: 1px solid rgba(248, 81, 73, 0.45);
+    color: #ffb3ae;
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 24px;
+    font-size: 0.9rem;
+  }
+  .error-banner.visible { display: block; }
+  .error-banner .error-detail {
+    color: var(--text-dim);
+    font-size: 0.82rem;
+    margin-top: 4px;
+    word-break: break-word;
+  }
+
+  /* States */
+  .state {
+    text-align: center;
+    padding: 80px 24px;
+    color: var(--text-dim);
+    font-size: 1rem;
+  }
+  .state .state-icon { font-size: 2.2rem; margin-bottom: 14px; }
+  .state p { max-width: 460px; margin: 0 auto; }
+
+  /* Meeting cards */
+  .meetings { display: flex; flex-direction: column; gap: 20px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px 26px;
+  }
+
+  .card-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .card-title {
+    font-size: 1.15rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    word-break: break-word;
+  }
+  .card-time {
+    margin-left: auto;
+    color: var(--text-faint);
+    font-size: 0.82rem;
+    white-space: nowrap;
+  }
+
+  .badge {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    vertical-align: middle;
+  }
+  .badge-failed {
+    background: rgba(248, 81, 73, 0.12);
+    color: #ff8f88;
+    border: 1px solid rgba(248, 81, 73, 0.4);
+  }
+  .badge-live {
+    background: rgba(63, 185, 80, 0.12);
+    color: var(--team-dev-fg);
+    border: 1px solid rgba(63, 185, 80, 0.4);
+  }
+
+  .summary {
+    color: var(--text-dim);
+    font-size: 0.95rem;
+    margin: 8px 0 4px;
+    max-width: 72ch;
+    word-break: break-word;
+  }
+
+  .section-label {
+    font-size: 0.72rem;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+    margin: 18px 0 8px;
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    background: var(--chip-bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 3px 12px;
+    font-size: 0.83rem;
+    word-break: break-word;
+  }
+
+  .table-scroll { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    word-break: break-word;
+  }
+  th {
+    color: var(--text-faint);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 650;
+  }
+  tr:last-child td { border-bottom: none; }
+  td.owner-cell { color: var(--text-dim); }
+  th.team-col, td.team-cell { width: 110px; white-space: nowrap; }
+
+  .team-badge {
+    display: inline-block;
+    border-radius: 6px;
+    padding: 2px 9px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: lowercase;
+    border: 1px solid var(--border);
+    background: var(--chip-bg);
+    color: var(--text-dim);
+  }
+  .team-content { background: var(--team-content-bg); color: var(--team-content-fg); border-color: var(--team-content-bd); }
+  .team-design  { background: var(--team-design-bg);  color: var(--team-design-fg);  border-color: var(--team-design-bd); }
+  .team-dev     { background: var(--team-dev-bg);     color: var(--team-dev-fg);     border-color: var(--team-dev-bd); }
+
+  .due-line {
+    margin-top: 14px;
+    font-size: 0.88rem;
+    color: var(--text-dim);
+    word-break: break-word;
+  }
+  .due-line .due-label { color: var(--amber); font-weight: 600; margin-right: 6px; }
+
+  details {
+    margin-top: 18px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-2);
+  }
+  summary {
+    cursor: pointer;
+    padding: 10px 16px;
+    font-size: 0.88rem;
+    color: var(--text-dim);
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before {
+    content: "▸";
+    font-size: 0.8rem;
+    color: var(--text-faint);
+    transition: transform 0.15s ease;
+  }
+  details[open] summary::before { transform: rotate(90deg); }
+  summary:hover { color: var(--text); }
+
+  .transcript {
+    max-height: 340px;
+    overflow-y: auto;
+    padding: 4px 16px 14px;
+    border-top: 1px solid var(--border);
+  }
+  .t-line {
+    font-size: 0.87rem;
+    padding: 5px 0;
+    word-break: break-word;
+  }
+  .t-speaker { color: var(--accent); font-weight: 600; }
+  .t-text { color: var(--text-dim); }
+
+  .empty-transcript {
+    color: var(--text-faint);
+    font-size: 0.85rem;
+    font-style: italic;
+  }
+
+  @media (max-width: 600px) {
+    .wrap { padding: 20px 14px 60px; }
+    .card { padding: 18px 16px; }
+    .refresh { margin-left: 0; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">EA</div>
+    <h1>Execution Agent</h1>
+    <span class="count-pill" id="count-pill" hidden><strong id="count-num">0</strong>&nbsp;<span id="count-word">meetings</span></span>
+    <div class="refresh">
+      <span class="refresh-dot" id="refresh-dot"></span>
+      <span id="refresh-text">Loading…</span>
+    </div>
+  </header>
+
+  <div class="error-banner" id="error-banner"></div>
+
+  <div id="content">
+    <div class="state" id="loading-state">
+      <div class="state-icon">⏳</div>
+      <p>Loading meetings…</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var REFRESH_MS = 20000;
+  var API_URL = "/api/meetings/list";
+
+  var contentEl = document.getElementById("content");
+  var errorBanner = document.getElementById("error-banner");
+  var countPill = document.getElementById("count-pill");
+  var countNum = document.getElementById("count-num");
+  var countWord = document.getElementById("count-word");
+  var refreshDot = document.getElementById("refresh-dot");
+  var refreshText = document.getElementById("refresh-text");
+
+  var hasRenderedData = false;
+  var lastFetchTime = null;
+  var openTranscripts = {}; // preserve <details> open state across refreshes
+
+  // ---------- DOM helpers (all content set via textContent; never innerHTML) ----------
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+
+  function asString(v) {
+    return (typeof v === "string") ? v : "";
+  }
+
+  function nonEmpty(v) {
+    return typeof v === "string" && v.trim().length > 0;
+  }
+
+  // ---------- Time formatting ----------
+
+  function formatRelative(iso) {
+    if (!nonEmpty(iso)) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    var diff = Date.now() - d.getTime();
+    if (diff < 0) diff = 0;
+    var sec = Math.floor(diff / 1000);
+    if (sec < 60) return "just now";
+    var min = Math.floor(sec / 60);
+    if (min < 60) return min + " min ago";
+    var hr = Math.floor(min / 60);
+    if (hr < 24) return hr + (hr === 1 ? " hour ago" : " hours ago");
+    var day = Math.floor(hr / 24);
+    if (day < 7) return day + (day === 1 ? " day ago" : " days ago");
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function formatFull(iso) {
+    if (!nonEmpty(iso)) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  }
+
+  // ---------- Rendering ----------
+
+  function renderEmptyState() {
+    var box = el("div", "state");
+    box.appendChild(el("div", "state-icon", "📭"));
+    box.appendChild(el("p", null, "No meetings captured yet — run a Meet call with the extension loaded."));
+    return box;
+  }
+
+  function renderErrorState(message) {
+    var box = el("div", "state");
+    box.appendChild(el("div", "state-icon", "⚠️"));
+    var p = el("p", null, "Could not load meetings. Retrying automatically every 20 seconds.");
+    box.appendChild(p);
+    var detail = el("p", null, asString(message));
+    detail.style.marginTop = "10px";
+    detail.style.color = "var(--text-faint)";
+    detail.style.fontSize = "0.85rem";
+    box.appendChild(detail);
+    return box;
+  }
+
+  function teamBadge(team) {
+    var t = asString(team).trim().toLowerCase();
+    var cls = "team-badge";
+    if (t === "content") cls += " team-content";
+    else if (t === "design") cls += " team-design";
+    else if (t === "dev") cls += " team-dev";
+    return el("span", cls, t || "—");
+  }
+
+  function renderDeliverables(deliverables) {
+    var frag = document.createDocumentFragment();
+    frag.appendChild(el("div", "section-label", "Deliverables"));
+
+    var scroll = el("div", "table-scroll");
+    var table = el("table");
+
+    var thead = el("thead");
+    var headRow = el("tr");
+    var thTeam = el("th", "team-col", "Team");
+    headRow.appendChild(thTeam);
+    headRow.appendChild(el("th", null, "Task"));
+    headRow.appendChild(el("th", null, "Owner"));
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    var tbody = el("tbody");
+    deliverables.forEach(function (d) {
+      if (!d || typeof d !== "object") return;
+      var tr = el("tr");
+      var tdTeam = el("td", "team-cell");
+      tdTeam.appendChild(teamBadge(d.team));
+      tr.appendChild(tdTeam);
+      tr.appendChild(el("td", null, nonEmpty(d.task) ? d.task : "—"));
+      tr.appendChild(el("td", "owner-cell", nonEmpty(d.owner_name) ? d.owner_name : "—"));
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    frag.appendChild(scroll);
+    return frag;
+  }
+
+  function renderTranscript(transcript, meetingKey) {
+    var lines = Array.isArray(transcript) ? transcript : [];
+    var details = el("details");
+    if (openTranscripts[meetingKey]) details.open = true;
+    details.addEventListener("toggle", function () {
+      openTranscripts[meetingKey] = details.open;
+    });
+
+    var summary = el("summary", null, "Transcript (" + lines.length + " lines)");
+    details.appendChild(summary);
+
+    var body = el("div", "transcript");
+    if (lines.length === 0) {
+      body.appendChild(el("div", "t-line empty-transcript", "No transcript lines captured."));
+    } else {
+      lines.forEach(function (line) {
+        if (!line || typeof line !== "object") return;
+        var row = el("div", "t-line");
+        var speaker = el("span", "t-speaker", (nonEmpty(line.speaker) ? line.speaker : "Unknown") + ": ");
+        row.appendChild(speaker);
+        row.appendChild(el("span", "t-text", asString(line.text)));
+        body.appendChild(row);
+      });
+    }
+    details.appendChild(body);
+    return details;
+  }
+
+  function renderCard(meeting) {
+    var card = el("article", "card");
+    var extracted = (meeting.extracted && typeof meeting.extracted === "object") ? meeting.extracted : null;
+    var meetingKey = nonEmpty(meeting.id) ? meeting.id : (asString(meeting.meeting_id) + "|" + asString(meeting.created_at));
+
+    // Title row
+    var head = el("div", "card-head");
+    var title = "Untitled meeting";
+    if (extracted && nonEmpty(extracted.project_name)) title = extracted.project_name;
+    else if (nonEmpty(meeting.meeting_id)) title = meeting.meeting_id;
+    head.appendChild(el("h2", "card-title", title));
+
+    if (!extracted) {
+      head.appendChild(el("span", "badge badge-failed", "extraction failed"));
+    }
+    if (meeting.ended_at === null || meeting.ended_at === undefined) {
+      head.appendChild(el("span", "badge badge-live", "in progress"));
+    }
+
+    var time = el("span", "card-time", formatRelative(meeting.created_at));
+    time.title = formatFull(meeting.created_at);
+    head.appendChild(time);
+    card.appendChild(head);
+
+    // Summary
+    if (extracted && nonEmpty(extracted.summary)) {
+      card.appendChild(el("p", "summary", extracted.summary));
+    }
+
+    // Participants
+    var attendees = Array.isArray(meeting.attendees) ? meeting.attendees : [];
+    if (attendees.length > 0) {
+      card.appendChild(el("div", "section-label", "Participants"));
+      var chips = el("div", "chips");
+      attendees.forEach(function (name) {
+        chips.appendChild(el("span", "chip", nonEmpty(name) ? name : "Unknown"));
+      });
+      card.appendChild(chips);
+    }
+
+    // Deliverables
+    if (extracted && Array.isArray(extracted.deliverables) && extracted.deliverables.length > 0) {
+      card.appendChild(renderDeliverables(extracted.deliverables));
+    }
+
+    // Due dates
+    if (extracted && nonEmpty(extracted.due_dates)) {
+      var due = el("div", "due-line");
+      due.appendChild(el("span", "due-label", "Due:"));
+      due.appendChild(document.createTextNode(extracted.due_dates));
+      card.appendChild(due);
+    }
+
+    // Transcript
+    card.appendChild(renderTranscript(meeting.transcript, meetingKey));
+
+    return card;
+  }
+
+  function renderMeetings(meetings) {
+    var container = el("div", "meetings");
+    meetings.forEach(function (m) {
+      if (!m || typeof m !== "object") return;
+      container.appendChild(renderCard(m));
+    });
+    return container;
+  }
+
+  function setContent(node) {
+    while (contentEl.firstChild) contentEl.removeChild(contentEl.firstChild);
+    contentEl.appendChild(node);
+  }
+
+  function updateCount(n) {
+    countPill.hidden = false;
+    countNum.textContent = String(n);
+    countWord.textContent = (n === 1) ? "meeting" : "meetings";
+  }
+
+  function setRefreshStatus(ok, fetching) {
+    refreshDot.classList.toggle("error", !ok);
+    refreshDot.classList.toggle("pulsing", !!fetching);
+    if (fetching) {
+      refreshText.textContent = "Refreshing…";
+    } else if (ok) {
+      refreshText.textContent = "Auto-refresh · updated " + (lastFetchTime ? formatRelative(lastFetchTime.toISOString()) : "just now");
+    } else {
+      refreshText.textContent = "Retrying in 20s";
+    }
+  }
+
+  function showErrorBanner(message) {
+    while (errorBanner.firstChild) errorBanner.removeChild(errorBanner.firstChild);
+    errorBanner.appendChild(el("div", null, "Failed to fetch meetings — retrying every 20 seconds."));
+    errorBanner.appendChild(el("div", "error-detail", asString(message)));
+    errorBanner.classList.add("visible");
+  }
+
+  function hideErrorBanner() {
+    errorBanner.classList.remove("visible");
+  }
+
+  // ---------- Fetch loop ----------
+
+  function refresh() {
+    setRefreshStatus(true, true);
+    fetch(API_URL, { headers: { "Accept": "application/json" }, cache: "no-store" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status + " " + res.statusText);
+        return res.json();
+      })
+      .then(function (data) {
+        var meetings = (data && Array.isArray(data.meetings)) ? data.meetings : [];
+        lastFetchTime = new Date();
+        hasRenderedData = true;
+        hideErrorBanner();
+        updateCount(meetings.length);
+        if (meetings.length === 0) {
+          setContent(renderEmptyState());
+        } else {
+          setContent(renderMeetings(meetings));
+        }
+        setRefreshStatus(true, false);
+      })
+      .catch(function (err) {
+        var message = (err && err.message) ? err.message : String(err);
+        if (hasRenderedData) {
+          // Keep last good data on screen; surface error in the banner.
+          showErrorBanner(message);
+        } else {
+          setContent(renderErrorState(message));
+        }
+        setRefreshStatus(false, false);
+      });
+  }
+
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+
+  // Keep "updated X ago" text fresh between fetches.
+  setInterval(function () {
+    if (lastFetchTime && !errorBanner.classList.contains("visible")) {
+      setRefreshStatus(true, false);
+    }
+  }, 30000);
+})();
+</script>
+</body>
+</html>
