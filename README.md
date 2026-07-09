@@ -72,6 +72,14 @@ create table calendar_notifications (
   start_at timestamptz,
   notified_at timestamptz default now()
 );
+
+-- REQUIRED migration (2026-07-09): the roster is self-populating and can
+-- discover someone by name only (e.g. a task owner mentioned in a meeting
+-- who wasn't on the call, or an ad-hoc attendee matched via Slack) — those
+-- rows have no email yet, so the original NOT NULL must be dropped. The
+-- code degrades gracefully if this hasn't run, but the person won't be
+-- saved for future meetings until it has.
+alter table roster alter column email drop not null;
 ```
 
 **Optional ingest lockdown:** `/api/meetings/ingest` is public. To require auth,
