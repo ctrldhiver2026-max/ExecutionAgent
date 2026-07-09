@@ -342,7 +342,12 @@
   "use strict";
 
   var REFRESH_MS = 20000;
-  var API_URL = "/api/meetings/list";
+  // Relative when served from the deployment (incl. per-branch preview
+  // URLs); absolute fallback so the page also works opened as a local file
+  // or in an editor preview panel.
+  var API_URL = /\.vercel\.app$/.test(location.hostname)
+    ? "/api/meetings/list"
+    : "https://execution-agent.vercel.app/api/meetings/list";
 
   var contentEl = document.getElementById("content");
   var errorBanner = document.getElementById("error-banner");
