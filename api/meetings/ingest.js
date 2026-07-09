@@ -1,12 +1,13 @@
 // Entry point for the extension's meeting-end POST.
-// Runs Claude extraction on the transcript, persists the meeting, and logs.
-//
-// Integration seam (see README.md "Integration seams"): Charan's roster/
-// role-resolution step picks up `extracted` here, resolves owner_name /
-// attendees against the roster table, then POSTs the resolved payload to
-// Hari's /api/slack/confirm. Not wired yet — logging only for now.
+// Runs Claude extraction on the transcript, persists the meeting, resolves
+// attendees + the meeting organizer against the roster/calendar, and DMs
+// that organizer to confirm the project before the rest of the pipeline
+// (Slack channel + ClickUp tickets) runs.
 import { extractProject } from "../../lib/extraction.js";
-import { createMeetingRecord } from "../../lib/db.js";
+import { createMeetingRecord, createPendingConfirmation } from "../../lib/db.js";
+import { resolveAttendees, findRosterMemberByEmail } from "../../lib/roster.js";
+import { findEventByMeetCode } from "../../lib/google.js";
+import { sendConfirmationDm } from "../../lib/slack.js";
 
 // Caps keep an unauthenticated caller from feeding us megabytes of junk
 // (each ingest triggers a paid Claude call). Generous for real meetings.
@@ -20,6 +21,58 @@ async function persistMeeting({ meeting_id, ended_at, attendees, transcript, ext
     await createMeetingRecord({ meeting_id, ended_at, attendees, transcript, extracted });
   } catch (err) {
     console.error("[meetings/ingest] persistence failed", err);
+  }
+}
+
+/**
+ * Pipeline step 4: DM the meeting organizer "still ON?" with confirm buttons.
+ * The organizer is found via the calendar event matching this meeting's Meet
+ * code (event.organizer email → roster → slack_id); MANAGER_SLACK_ID is a
+ * fallback for when the calendar isn't configured yet or no match is found.
+ * Entirely non-fatal — capture + extraction already succeeded by this point.
+ */
+async function triggerConfirmation({ meeting_id, extracted, attendees }) {
+  if (!extracted?.project_name) {
+    console.log("[meetings/ingest] no concrete project extracted — skipping confirmation trigger");
+    return;
+  }
+
+  let initiatorSlackId = null;
+  try {
+    const event = await findEventByMeetCode(meeting_id);
+    if (event?.organizer) {
+      const organizer = await findRosterMemberByEmail(event.organizer);
+      initiatorSlackId = organizer?.slack_id || null;
+      if (!initiatorSlackId) {
+        console.log(`[meetings/ingest] calendar organizer ${event.organizer} has no roster match`);
+      }
+    } else {
+      console.log(`[meetings/ingest] no calendar event found for meet code ${meeting_id}`);
+    }
+  } catch (err) {
+    console.error("[meetings/ingest] calendar lookup failed (non-fatal)", err);
+  }
+
+  if (!initiatorSlackId) initiatorSlackId = process.env.MANAGER_SLACK_ID || null;
+  if (!initiatorSlackId) {
+    console.log("[meetings/ingest] no initiator resolved (no calendar match, no MANAGER_SLACK_ID) — skipping confirmation DM");
+    return;
+  }
+
+  try {
+    const resolvedAttendees = await resolveAttendees(attendees);
+    const project = {
+      meeting_id,
+      project_name: extracted.project_name,
+      deliverables: extracted.deliverables || [],
+      due_dates: extracted.due_dates,
+      attendees: resolvedAttendees,
+    };
+    const confirmation = await createPendingConfirmation(project);
+    await sendConfirmationDm(initiatorSlackId, project.project_name, confirmation.id);
+    console.log(`[meetings/ingest] confirmation DM sent to ${initiatorSlackId} for "${project.project_name}"`);
+  } catch (err) {
+    console.error("[meetings/ingest] confirmation trigger failed (non-fatal)", err);
   }
 }
 
@@ -104,6 +157,7 @@ export default async function handler(req, res) {
     const extracted = await extractProject({ transcript, attendees });
     console.log("[meetings/ingest] extracted", extracted);
     await persistMeeting({ meeting_id, ended_at, attendees, transcript, extracted });
+    await triggerConfirmation({ meeting_id, extracted, attendees });
     res.status(200).json({ status: "received", extracted });
   } catch (err) {
     // Capture already succeeded — an extraction failure shouldn't make the

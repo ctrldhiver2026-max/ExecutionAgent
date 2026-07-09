@@ -1,7 +1,9 @@
 // api/slack/confirm.js
-// Pipeline stage 3 entry point. Called internally after Mansoor's extraction
-// + Charan's role resolution finish. Stores the project as a pending
-// confirmation, then DMs the meeting initiator with Yes/No buttons.
+// Pipeline stage 3 entry point. api/meetings/ingest.js calls this
+// automatically after extraction + roster resolution for every real
+// meeting; this HTTP endpoint exists for manual/solo testing (see below).
+// Stores the project as a pending confirmation, then DMs the meeting
+// initiator with Yes/No buttons.
 //
 // POST https://execution-agent.vercel.app/api/slack/confirm
 // Body: {

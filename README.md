@@ -10,7 +10,10 @@ api/slack/interactivity.js  Button clicks: confirm / reject / designer pick
 api/slack/events.js         Events API URL verification (challenge echo)
 lib/slack.js                Signature verification + all Slack API calls
 lib/db.js                   Supabase REST helpers (pending_confirmations, projects)
-lib/orchestrator.js         Post-confirmation flow; Charan's stubs clearly marked
+lib/orchestrator.js         Post-confirmation flow: assignment → channel → ClickUp → notify
+lib/roster.js                Role resolution + the 3-flow design assignment engine
+lib/clickup.js               ClickUp parent task + per-deliverable subtasks
+lib/google.js                Calendar OAuth + event lookup (watcher + organizer correlation)
 ```
 
 ## 1. Slack app config (api.slack.com/apps)
@@ -127,12 +130,18 @@ curl -X POST https://execution-agent.vercel.app/api/slack/confirm \
   }'
 ```
 
-Expected: DM arrives → click **Yes** → message updates → channel `#webinar-july-2026` is created, you're invited, kickoff message posts with stub ClickUp link.
+Expected: DM arrives → click **Yes** → message updates → channel `#webinar-july-2026` is created, you're invited, real ClickUp parent task + subtasks are created (needs `CLICKUP_API_TOKEN`/`CLICKUP_LIST_ID` set), kickoff message posts with the ClickUp link.
 
-## 4. Integration seams (Phase 3)
+## 4. End-to-end trigger
 
-- **Mansoor → you:** his pipeline calls `POST /api/slack/confirm` with the extracted project JSON.
-- **Charan → you:** he replaces `resolveAssignments()` and `createClickUpTickets()` in `lib/orchestrator.js` — signatures are documented in the stubs, don't change them without telling him.
+`api/meetings/ingest.js` calls this confirm flow automatically once a real
+project is extracted from a captured meeting — no manual curl needed for a
+live test. It resolves the meeting organizer (calendar event → roster email
+match, or `MANAGER_SLACK_ID` as a fallback) and sends them the confirm DM.
+
+`lib/roster.js` and `lib/clickup.js` are the real (non-stub) role-resolution
+and ClickUp integrations — see their file-header comments for the exact
+contract each function follows.
 
 ## Gotchas learned the hard way (read before demo day)
 
