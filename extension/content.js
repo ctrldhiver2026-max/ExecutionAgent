@@ -51,7 +51,11 @@
       const textEl = block.querySelector(CAPTION_TEXT_SELECTOR);
       if (!textEl || !textEl.textContent.trim()) return;
 
-      const speaker = nameEl?.textContent.trim() || 'Unknown';
+      // Clean once, use everywhere — a previous version only cleaned the
+      // copy added to `attendees`, leaving the raw "& N others" pollution
+      // sitting in transcript.speaker (visible on the dashboard and fed to
+      // extraction as the speaker label).
+      const speaker = cleanName(nameEl?.textContent.trim()) || 'Unknown';
       const text = textEl.textContent.trim();
       const ts = new Date().toISOString();
 
@@ -60,7 +64,7 @@
       // Meet captions your own speech as the placeholder "You", not your
       // real name — that's not an identity, so don't count it as one.
       if (speaker !== 'Unknown' && speaker !== 'You') {
-        attendees.add(cleanName(speaker));
+        attendees.add(speaker);
       }
 
       const existingIndex = lineIndexByNode.get(block);
