@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Execution Agent — Meet Capture",
+  "version": "0.1.0",
+  "description": "Captures live captions + attendees from Google Meet and posts them to the Execution Agent pipeline on meeting end.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["https://meet.google.com/*", "https://execution-agent.vercel.app/*", "http://localhost:3000/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Execution Agent"
+  }
+}
