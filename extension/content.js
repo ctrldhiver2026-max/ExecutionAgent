@@ -176,12 +176,21 @@
   }
 
   // Most users never remember to click CC themselves — auto-click it for them
-  // rather than depend on that. Button is toggled via aria-pressed; only
-  // click if captions aren't already on.
+  // rather than depend on that. Meet doesn't consistently render toolbar
+  // controls as native <button> elements — some are div[role="button"] — so
+  // match on role/aria-label rather than tag name. Only click if captions
+  // aren't already on (checked via aria-pressed where present, falling back
+  // to the aria-label text itself since aria-pressed isn't always set).
   function autoEnableCaptions() {
     if (document.querySelector(CAPTIONS_REGION_SELECTOR)) return;
-    const ccButton = document.querySelector('button[aria-label*="captions" i]');
-    if (ccButton && ccButton.getAttribute('aria-pressed') !== 'true') {
+    const ccButton = document.querySelector(
+      'button[aria-label*="captions" i], [role="button"][aria-label*="captions" i]'
+    );
+    if (!ccButton) return;
+    const pressed = ccButton.getAttribute('aria-pressed');
+    const label = ccButton.getAttribute('aria-label') || '';
+    const alreadyOn = pressed === 'true' || /turn off captions/i.test(label);
+    if (!alreadyOn) {
       ccButton.click();
     }
   }
