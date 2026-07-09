@@ -69,7 +69,7 @@ Deploy, then fire a fake project at the confirm endpoint — replace `U0YOURID` 
 curl -X POST https://execution-agent.vercel.app/api/slack/confirm \
   -H "Content-Type: application/json" \
   -d '{
-    "initiator_slack_id": "U0YOURID",
+    "initiator_slack_id": "U0A73V3SZ9N",
     "project": {
       "meeting_id": "test-001",
       "project_name": "Webinar July 2026",

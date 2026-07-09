@@ -33,51 +33,55 @@ export default async function handler(req, res) {
   const action = payload.actions?.[0];
   if (!action) return res.status(200).end();
 
-  // ── ACK FAST ─────────────────────────────────────────────────────────
-  // Slack requires a response within 3s. Respond immediately, then do the
-  // heavy work (channel creation, ClickUp) after. On Vercel the function
-  // stays alive until the promise chain settles, but keep work short —
-  // hackathon-fine, production would use a queue.
-  res.status(200).end();
-
+  // ── DO THE WORK, THEN ACK ────────────────────────────────────────────
+  // Slack requires a response within 3s. We used to ack first and keep
+  // working after res.end() — on Vercel's Fluid compute the invocation
+  // tears down right after the response flushes, silently dropping any
+  // work queued after it (confirmed via logs: 0 outgoing requests, 40ms).
+  // So: await everything, respond once at the end. The whole flow (a
+  // couple Supabase round trips + a couple Slack API calls) normally
+  // finishes well under 3s; production would use a queue instead.
   try {
     if (action.action_id === "confirm_project") {
       const confirmation = await getPendingConfirmation(action.value);
       if (!confirmation || confirmation.status !== "pending") {
         await replaceMessage(payload, ":warning: This confirmation was already handled.");
-        return;
+        return res.status(200).end();
       }
       await updateConfirmationStatus(action.value, "confirmed");
       await replaceMessage(payload, `:white_check_mark: Confirmed! Setting up *${confirmation.payload.project_name}*…`);
 
       // Hand off to the pipeline: assignment → channel → ClickUp → notify
       await runProjectCreation(confirmation);
-      return;
+      return res.status(200).end();
     }
 
     if (action.action_id === "reject_project") {
       await updateConfirmationStatus(action.value, "rejected");
       await replaceMessage(payload, ":no_entry_sign: Got it — ignoring this one.");
-      return;
+      return res.status(200).end();
     }
 
     if (action.action_id.startsWith("pick_designer_")) {
       const [confirmationId, designerSlackId] = action.value.split("|");
       const confirmation = await getPendingConfirmation(confirmationId);
-      if (!confirmation) return;
+      if (!confirmation) return res.status(200).end();
 
       await replaceMessage(payload, `:art: Designer picked: <@${designerSlackId}>. Continuing setup…`);
 
       // Resume the pipeline with the chosen designer
       await runProjectCreation(confirmation, { designerSlackId });
-      return;
+      return res.status(200).end();
     }
+
+    return res.status(200).end();
   } catch (err) {
     console.error("Interactivity handler error:", err);
     // Best-effort: tell the user something broke instead of silent failure
     try {
       await replaceMessage(payload, `:x: Something went wrong: ${err.message}`);
     } catch {}
+    return res.status(200).end();
   }
 }
 
