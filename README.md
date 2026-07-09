@@ -80,6 +80,15 @@ create table calendar_notifications (
 -- code degrades gracefully if this hasn't run, but the person won't be
 -- saved for future meetings until it has.
 alter table roster alter column email drop not null;
+
+-- REQUIRED migration (2026-07-10): added "video_design" as a fourth team.
+-- The app-level enum (lib/extraction.js, api/roster/update.js) accepts it
+-- already, but roster.team has its own DB-level check constraint that
+-- rejects it until this runs — People-tab role saves for Video Design
+-- fail with a 23514 violation otherwise.
+alter table roster drop constraint roster_team_check;
+alter table roster add constraint roster_team_check
+  check (team is null or team in ('content', 'design', 'dev', 'video_design'));
 ```
 
 **Optional ingest lockdown:** `/api/meetings/ingest` is public. To require auth,
