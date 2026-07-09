@@ -8,9 +8,11 @@
 (() => {
   const CAPTIONS_REGION_SELECTOR = '[role="region"][aria-label="Captions"]';
   const CAPTION_LINE_SELECTOR = ':scope > div';
-  // .adE6rb wraps an avatar <img> followed by one name <div> (.KcIKyf.jxFHg) —
-  // select the div specifically so we don't get the img (which has no text).
-  const SPEAKER_NAME_SELECTOR = '.adE6rb div';
+  // .adE6rb wraps an avatar <img>, sometimes an icon <div> (rendered as
+  // Material Symbols ligature text like "domain_disabled" — not a name!),
+  // and the actual name <div class="KcIKyf jxFHg">. Target that class
+  // directly instead of a generic 'div' wildcard.
+  const SPEAKER_NAME_SELECTOR = '.adE6rb .KcIKyf';
   const CAPTION_TEXT_SELECTOR = '.ygicle';
   const PEOPLE_PANEL_ROW_SELECTOR = '.SKWIhd';
   const PEOPLE_PANEL_NAME_SELECTOR = '.zWGUib';
@@ -39,7 +41,11 @@
 
       // Whoever speaks is definitely an attendee — this is more reliable
       // than the People panel / video tiles, which aren't always rendered.
-      if (speaker !== 'Unknown') attendees.add(speaker.replace(/\s*\(You\)$/, ''));
+      // Meet captions your own speech as the placeholder "You", not your
+      // real name — that's not an identity, so don't count it as one.
+      if (speaker !== 'Unknown' && speaker !== 'You') {
+        attendees.add(speaker.replace(/\s*\(You\)$/, ''));
+      }
 
       const existingIndex = lineIndexByNode.get(block);
       if (existingIndex !== undefined) {
