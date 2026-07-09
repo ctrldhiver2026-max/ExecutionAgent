@@ -12,16 +12,32 @@ export default async function handler(req, res) {
       const result = await lookupUserByName(name);
       // users.list is a GET-style method (JSON POST bodies get rejected as
       // invalid_arguments — same class of bug as users.lookupByEmail).
-      const r = await fetch("https://slack.com/api/users.list?limit=100", {
-        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-      });
-      const data = await r.json();
-      const people = data.ok
-        ? (data.members || [])
-            .filter((u) => !u.is_bot && !u.deleted && u.id !== "USLACKBOT")
-            .map((u) => ({ real_name: u.profile?.real_name || u.real_name || null, display_name: u.profile?.display_name || null }))
-        : { usersListError: data.error };
-      res.status(200).json({ lookedUp: name, result, workspaceNames: people });
+      // Full pagination, then substring-match on the query's first token so
+      // we can SEE what this person's Slack profile actually says.
+      const token = name.trim().toLowerCase().split(/\s+/)[0];
+      const matches = [];
+      let cursor;
+      do {
+        const params = new URLSearchParams({ limit: "200", ...(cursor && { cursor }) });
+        const r = await fetch(`https://slack.com/api/users.list?${params}`, {
+          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+        });
+        const data = await r.json();
+        if (!data.ok) {
+          res.status(200).json({ lookedUp: name, result, usersListError: data.error });
+          return;
+        }
+        for (const u of data.members || []) {
+          if (u.is_bot || u.deleted || u.id === "USLACKBOT") continue;
+          const real = (u.profile?.real_name || u.real_name || "").toLowerCase();
+          const display = (u.profile?.display_name || "").toLowerCase();
+          if (real.includes(token) || display.includes(token)) {
+            matches.push({ real_name: u.profile?.real_name || u.real_name || null, display_name: u.profile?.display_name || null });
+          }
+        }
+        cursor = data.response_metadata?.next_cursor || undefined;
+      } while (cursor);
+      res.status(200).json({ lookedUp: name, result, substringMatches: matches });
       return;
     } catch (err) {
       res.status(500).json({ error: String(err.message || err) });
