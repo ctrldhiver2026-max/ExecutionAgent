@@ -101,6 +101,20 @@ alter table roster add constraint roster_team_check
 -- it's computed live from ClickUp on every view (see lib/clickup.js
 -- getProjectLiveStatus), so there's no "done" concept to keep in sync.
 alter table projects add column if not exists held_by_id text;
+
+-- REQUIRED migration (2026-07-10): review-approval flow (Section 5). No
+-- button carries the review's context anymore (plain-text only), so it has
+-- to be persisted between the "share for review" message and the later,
+-- separate "Done"/"Approved" reply that consumes it.
+create table pending_reviews (
+  id uuid primary key default gen_random_uuid(),
+  channel_id text not null,
+  subtask_id text not null,
+  subtask_name text,
+  assignee_slack_id text,
+  approver_slack_id text not null,
+  created_at timestamptz default now()
+);
 ```
 
 **Optional ingest lockdown:** `/api/meetings/ingest` is public. To require auth,
@@ -179,25 +193,33 @@ contract each function follows.
 
 ## 5. Review-approval flow (deliverable done → reviewer approves → ClickUp closes)
 
-No slash command, no button to kick it off — an assignee just posts a plain
-message in their project's channel mentioning whoever should review it, with
-a link: `@mansoor here's the landing page, please review: <figma link>`.
+Entirely plain-text — no slash command, no buttons, nothing to click:
 
-`api/slack/events.js` watches every message in every tracked project channel
-for that shape (a mention + a URL). If it finds one, it identifies the
-sender's ClickUp assignment in that project (matched by email, same
-zero-touch identity resolution the rest of the pipeline uses) and — only if
-they have **exactly one** open subtask there — posts a Yes/No "Is this
-final?" prompt aimed at the mentioned person. Ambiguous (2+ open subtasks)
-or unresolvable senders are skipped entirely rather than guessed at.
+1. An assignee posts a normal message in their project's channel mentioning
+   whoever should review it, with a link:
+   `@mansoor here's the landing page, please review: <figma link>`.
+2. `api/slack/events.js` watches every message in every tracked project
+   channel for that shape (a mention + a URL). If it finds one, it
+   identifies the sender's ClickUp assignment in that project (matched by
+   email, same zero-touch identity resolution the rest of the pipeline
+   uses) and — only if they have **exactly one** open subtask there —
+   remembers "this person is expected to approve this subtask"
+   (`pending_reviews` table) and posts a plain acknowledgement. Ambiguous
+   (2+ open subtasks) or unresolvable senders are skipped entirely rather
+   than guessed at.
+3. The mentioned approver later posts a **separate, short plain message** in
+   that same channel — "Done", "Approved", "Looks good", "LGTM", "Confirmed",
+   "Final", "All good", "Ship it", or "Good to go" (exact-phrase match, so a
+   longer sentence that happens to contain one of these words doesn't
+   misfire). That alone is the approval: the remembered subtask is set to
+   the list's closed status (`lib/clickup.js` `setTaskComplete`) and a
+   confirmation is posted in the channel — which already has the whole team
+   in it, so that IS the "team gets notified" step, no separate broadcast
+   needed.
 
-`api/slack/interactivity.js` handles the buttons: **Yes** sets that subtask
-to the list's closed status via `lib/clickup.js` `setTaskComplete` and edits
-the prompt into a confirmation everyone in the channel sees (that channel
-already has the whole team in it, so no separate notification step is
-needed); **No** edits the prompt to say so and DMs the assignee — no ClickUp
-status change. Only the person named in the original mention can click
-either button; anyone else gets a private (ephemeral) "not for you" reply.
+There's no rejection path (matches how this was scoped) — if the approver
+never sends one of those phrases, nothing happens; the pending review just
+sits there until they do.
 
 ## Gotchas learned the hard way (read before demo day)
 

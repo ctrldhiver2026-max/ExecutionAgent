@@ -4,17 +4,26 @@
 // Requires the `message.channels` event subscription + `channels:history`
 // bot scope (Reinstall to Workspace after adding either).
 //
-// Review-approval flow: an assignee posts a plain message in their
-// project's channel mentioning whoever should review it, with a link
-// ("@mansoor here's the landing page: <figma link>") — no slash command,
-// no button. If that channel belongs to a tracked project AND the sender
-// currently has exactly one open ClickUp subtask assigned to them in it,
-// we post a Yes/No "Is this final?" prompt aimed at the mentioned person.
-// Yes -> subtask marked complete (api/slack/interactivity.js handles the
-// button click); No -> assignee gets a DM, nothing else changes.
+// Review-approval flow — entirely plain-text, no slash command, no buttons:
+//   1. An assignee posts "@approver here's the landing page: <figma link>"
+//      in their project's channel. If that channel is a tracked project AND
+//      the sender has exactly one open ClickUp subtask there, we remember
+//      "this person is expected to approve this subtask" (pending_reviews)
+//      and post a plain acknowledgement — nothing interactive.
+//   2. Later, the mentioned approver posts a separate plain message like
+//      "Done" / "Looks good" / "Approved" in THAT SAME channel. That alone
+//      is the approval: the remembered subtask is marked complete in
+//      ClickUp and a confirmation goes out in the channel (already has the
+//      whole team in it, so that's the "team gets notified" step too).
 import { verifySlackSignature, postMessage } from "../../lib/slack.js";
-import { getProjectByChannelId, getRosterMemberBySlackId } from "../../lib/db.js";
-import { findClickUpMemberIdByEmail, findOpenSubtaskForAssignee } from "../../lib/clickup.js";
+import {
+  getProjectByChannelId,
+  getRosterMemberBySlackId,
+  createPendingReview,
+  getLatestPendingReview,
+  deletePendingReview,
+} from "../../lib/db.js";
+import { findClickUpMemberIdByEmail, findOpenSubtaskForAssignee, setTaskComplete } from "../../lib/clickup.js";
 
 export const config = { api: { bodyParser: false } };
 
@@ -32,11 +41,36 @@ function readRawBody(req) {
 const MENTION_RE = /<@([A-Z0-9]+)(?:\|[^>]*)?>/;
 const URL_RE = /<(https?:\/\/[^|>]+)(?:\|[^>]*)?>/;
 
-async function handleChannelMessage(event) {
-  // Only plain human messages — no edits/deletes/bot posts (avoids reacting
-  // to our own "Is this final?" / confirmation messages and looping).
-  if (event.subtype || event.bot_id || !event.text || !event.user) return;
+// Deliberately short, common phrases — a whole-message match (after
+// stripping punctuation), not a substring search, so a longer sentence that
+// happens to contain the word "done" ("I'm not done yet") doesn't misfire.
+const APPROVAL_PHRASES = new Set([
+  "done", "approved", "approve", "looks good", "lgtm",
+  "good to go", "confirmed", "final", "all good", "ship it",
+]);
 
+function isApprovalMessage(text) {
+  const normalized = text.trim().toLowerCase().replace(/[.!]+$/, "");
+  return APPROVAL_PHRASES.has(normalized);
+}
+
+async function handleApproval(event, pending) {
+  await setTaskComplete(pending.subtask_id);
+  await deletePendingReview(pending.id);
+  await postMessage(
+    event.channel,
+    `"${pending.subtask_name}" approved`,
+    [{
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `:white_check_mark: *${pending.subtask_name}* approved by <@${event.user}> — marked complete.`,
+      },
+    }]
+  );
+}
+
+async function handleReviewRequest(event) {
   const mentionMatch = event.text.match(MENTION_RE);
   const urlMatch = event.text.match(URL_RE);
   if (!mentionMatch || !urlMatch) return; // not a "share for review" message
@@ -52,7 +86,7 @@ async function handleChannelMessage(event) {
 
   const clickupMemberId = await findClickUpMemberIdByEmail(sender.email);
   if (!clickupMemberId) {
-    console.log(`[slack/events] sender ${sender.email} isn't a ClickUp list member — skipping review prompt`);
+    console.log(`[slack/events] sender ${sender.email} isn't a ClickUp list member — skipping review request`);
     return;
   }
 
@@ -63,32 +97,45 @@ async function handleChannelMessage(event) {
   }
 
   const approverSlackId = mentionMatch[1];
-  await postMessage(event.channel, `Is "${subtask.name}" final?`, [
-    {
+  await createPendingReview({
+    channel_id: event.channel,
+    subtask_id: subtask.id,
+    subtask_name: subtask.name,
+    assignee_slack_id: event.user,
+    approver_slack_id: approverSlackId,
+  });
+  await postMessage(
+    event.channel,
+    `Waiting on <@${approverSlackId}> to review "${subtask.name}"`,
+    [{
       type: "section",
-      text: { type: "mrkdwn", text: `:eyes: <@${approverSlackId}> — is *${subtask.name}* ready to mark complete?` },
-    },
-    {
-      type: "actions",
-      block_id: "deliverable_review",
-      elements: [
-        {
-          type: "button",
-          style: "primary",
-          text: { type: "plain_text", text: "Yes, final" },
-          action_id: "approve_deliverable",
-          value: `${subtask.id}|${event.user}|${approverSlackId}|${subtask.name}`,
-        },
-        {
-          type: "button",
-          style: "danger",
-          text: { type: "plain_text", text: "No, not yet" },
-          action_id: "reject_deliverable",
-          value: `${subtask.id}|${event.user}|${approverSlackId}|${subtask.name}`,
-        },
-      ],
-    },
-  ]);
+      text: {
+        type: "mrkdwn",
+        text: `:eyes: Got it — <@${approverSlackId}>, reply here with something like *"Approved"* once *${subtask.name}* looks good.`,
+      },
+    }]
+  );
+}
+
+async function handleChannelMessage(event) {
+  // Only plain human messages — no edits/deletes/bot posts (avoids reacting
+  // to our own acknowledgement/confirmation messages and looping).
+  if (event.subtype || event.bot_id || !event.text || !event.user) return;
+
+  // Check "is this an approval reply?" before "is this a new review
+  // request?" — an approver's short "Done" would never contain a mention
+  // or link anyway, but checking order matters if someone ever combines both.
+  if (isApprovalMessage(event.text)) {
+    const pending = await getLatestPendingReview(event.channel, event.user);
+    if (pending) {
+      await handleApproval(event, pending);
+      return;
+    }
+    // Not this person's word to give right now (no pending review waiting
+    // on them in this channel) — say nothing, not every "done" is ours.
+  }
+
+  await handleReviewRequest(event);
 }
 
 export default async function handler(req, res) {
