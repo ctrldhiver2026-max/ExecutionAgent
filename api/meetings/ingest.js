@@ -6,7 +6,7 @@
 // ClickUp tickets) runs.
 import { extractProject } from "../../lib/extraction.js";
 import { createMeetingRecord, createPendingConfirmation } from "../../lib/db.js";
-import { resolveAttendees, findRosterMemberByEmail, inferMissingTeams } from "../../lib/roster.js";
+import { resolveAttendees, getOrCreateAttendeeIdentity, inferMissingTeams } from "../../lib/roster.js";
 import { findEventByMeetCode } from "../../lib/google.js";
 import { sendConfirmationDm } from "../../lib/slack.js";
 
@@ -43,10 +43,13 @@ async function triggerConfirmation({ meeting_id, extracted, attendees }) {
   try {
     calendarEvent = await findEventByMeetCode(meeting_id);
     if (calendarEvent?.organizer) {
-      const organizer = await findRosterMemberByEmail(calendarEvent.organizer);
-      initiatorSlackId = organizer?.slack_id || null;
-      if (!initiatorSlackId) {
-        console.log(`[meetings/ingest] calendar organizer ${calendarEvent.organizer} has no roster match`);
+      const organizer = await getOrCreateAttendeeIdentity({
+        email: calendarEvent.organizer,
+        name: null,
+        });
+        initiatorSlackId = organizer?.slack_id || null;
+        if (!initiatorSlackId) {
+        console.log(`[meetings/ingest] calendar organizer ${calendarEvent.organizer} could not be resolved to Slack`);
       }
     } else {
       console.log(`[meetings/ingest] no calendar event found for meet code ${meeting_id}`);
