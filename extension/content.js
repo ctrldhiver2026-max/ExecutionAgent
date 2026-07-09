@@ -127,8 +127,22 @@
     return false;
   }
 
-  // Captions region only exists once the user turns captions on — poll until it appears.
+  // Most users never remember to click CC themselves — auto-click it for them
+  // rather than depend on that. Button is toggled via aria-pressed; only
+  // click if captions aren't already on.
+  function autoEnableCaptions() {
+    if (document.querySelector(CAPTIONS_REGION_SELECTOR)) return;
+    const ccButton = document.querySelector('button[aria-label*="captions" i]');
+    if (ccButton && ccButton.getAttribute('aria-pressed') !== 'true') {
+      ccButton.click();
+    }
+  }
+
+  // Captions region only exists once captions are on — poll (and try to
+  // auto-enable them) until it appears. The CC button itself may not be
+  // mounted yet right after page load, hence the retry loop.
   const attachPoll = setInterval(() => {
+    autoEnableCaptions();
     if (attachCaptionsObserver()) clearInterval(attachPoll);
   }, 2000);
 
