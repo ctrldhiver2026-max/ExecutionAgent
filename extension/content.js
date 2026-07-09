@@ -59,7 +59,22 @@
     });
   }
 
+  // If the extension is reloaded while this tab stays open, chrome.runtime
+  // goes away out from under the content script — stop working instead of
+  // throwing on every subsequent observer tick.
+  function isExtensionContextValid() {
+    return typeof chrome !== 'undefined' && !!chrome.runtime?.id;
+  }
+
+  function teardown() {
+    captionsObserver.disconnect();
+    endScreenObserver.disconnect();
+    clearInterval(attendeePoll);
+    clearInterval(attachPoll);
+  }
+
   function sendUpdate() {
+    if (!isExtensionContextValid()) return teardown();
     chrome.runtime.sendMessage({
       type: 'TRANSCRIPT_UPDATE',
       meetingId: meetingIdFromUrl(),
@@ -69,6 +84,7 @@
   }
 
   function handlePotentialEnd() {
+    if (!isExtensionContextValid()) return teardown();
     chrome.runtime.sendMessage({
       type: 'MEETING_ENDED',
       meetingId: meetingIdFromUrl(),
@@ -117,7 +133,7 @@
   }, 2000);
 
   // Attendees (People panel / video tiles) can change independent of captions.
-  setInterval(() => {
+  const attendeePoll = setInterval(() => {
     captureAttendees();
     sendUpdate();
   }, 3000);

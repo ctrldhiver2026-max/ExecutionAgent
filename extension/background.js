@@ -15,9 +15,13 @@ chrome.runtime.onMessage.addListener((message, sender) => {
       transcript: message.transcript,
       attendees: message.attendees,
     });
+    console.log(
+      `[execution-agent] update: ${message.transcript.length} lines, ${message.attendees.length} attendees`
+    );
   }
 
   if (message.type === 'MEETING_ENDED') {
+    console.log('[execution-agent] meeting ended, posting payload', message);
     postMeeting({
       meeting_id: message.meetingId,
       transcript: message.transcript,
