@@ -14,8 +14,10 @@
   // directly instead of a generic 'div' wildcard.
   const SPEAKER_NAME_SELECTOR = '.adE6rb .KcIKyf';
   const CAPTION_TEXT_SELECTOR = '.ygicle';
-  const PEOPLE_PANEL_ROW_SELECTOR = '.SKWIhd';
-  const PEOPLE_PANEL_NAME_SELECTOR = '.zWGUib';
+  // Each participant row in the People panel carries the name directly as
+  // aria-label — e.g. div[role="listitem"][aria-label="Mansoorahamed S"].
+  // More reliable than digging for the obfuscated .zWGUib text node.
+  const PEOPLE_PANEL_ROW_SELECTOR = '[role="list"][aria-label="Participants"] [role="listitem"][aria-label]';
 
   const transcript = []; // [{ speaker, text, ts }]
   const lineIndexByNode = new WeakMap(); // caption block DOM node -> transcript index
@@ -64,8 +66,8 @@
     // "name tag" elements turned out to be a UI badge overlay that matches
     // unrelated on-screen text, so we don't use them. Caption speakers
     // (captureCaptionLines) fill the gap when the panel isn't open.
-    document.querySelectorAll(`${PEOPLE_PANEL_ROW_SELECTOR} ${PEOPLE_PANEL_NAME_SELECTOR}`).forEach((el) => {
-      const name = el.textContent.trim().replace(/\s*\(You\)$/, '');
+    document.querySelectorAll(PEOPLE_PANEL_ROW_SELECTOR).forEach((el) => {
+      const name = el.getAttribute('aria-label')?.trim().replace(/\s*\(You\)$/, '');
       if (name) attendees.add(name);
     });
   }
