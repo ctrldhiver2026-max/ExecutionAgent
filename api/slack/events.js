@@ -22,8 +22,9 @@ import {
   createPendingReview,
   getLatestPendingReview,
   completePendingReview,
+  updateProjectStagePlan,
 } from "../../lib/db.js";
-import { findClickUpMemberIdByEmail, findOpenSubtaskForAssignee, setTaskComplete, addTaskComment } from "../../lib/clickup.js";
+import { findClickUpMemberIdByEmail, findOpenSubtaskForAssignee, setTaskComplete, addTaskComment, assignTask } from "../../lib/clickup.js";
 
 export const config = { api: { bodyParser: false } };
 
@@ -69,6 +70,72 @@ function isApprovalMessage(text) {
   return APPROVAL_PHRASES.has(normalized);
 }
 
+/**
+ * Sequential department handoff (2026-07-10): a project's deliverables are
+ * assigned one team at a time (content -> design -> dev -> video_design, per
+ * lib/clickup.js's TEAM_ORDER). When the subtask that just got approved
+ * closes out its whole team's stage, activate the next pending stage —
+ * assign its subtasks in ClickUp and announce it in the channel. No-op if
+ * there's no stage_plan (pre-migration, or nothing left to hand off to).
+ *
+ * Known limitation: stage_plan is read-modified-written as a single JSON
+ * blob, so two approvals in the very same stage landing at the exact same
+ * moment could race and one's `done` flag could be lost. Acceptable at this
+ * app's scale (a handful of people approving one at a time) — not worth the
+ * complexity of optimistic locking for a hackathon project.
+ */
+async function advanceStageIfComplete(project, doneSubtaskId, channelId) {
+  const plan = project?.stage_plan;
+  if (!plan || !Array.isArray(plan.order) || !plan.stages) return;
+
+  let currentTeam = null;
+  for (const team of plan.order) {
+    const subtask = plan.stages[team]?.subtasks?.find((s) => s.subtask_id === doneSubtaskId);
+    if (subtask) {
+      subtask.done = true;
+      currentTeam = team;
+      break;
+    }
+  }
+  if (!currentTeam) return; // this subtask isn't tracked by the stage plan
+
+  const currentStage = plan.stages[currentTeam];
+  if (!currentStage.subtasks.every((s) => s.done)) {
+    await updateProjectStagePlan(project.meeting_id, plan); // persist this subtask's done flag either way
+    return;
+  }
+  currentStage.status = "done";
+
+  const currentIdx = plan.order.indexOf(currentTeam);
+  const nextTeam = plan.order.slice(currentIdx + 1).find((team) => plan.stages[team].status === "pending");
+  if (!nextTeam) {
+    await updateProjectStagePlan(project.meeting_id, plan);
+    return;
+  }
+
+  const nextStage = plan.stages[nextTeam];
+  nextStage.status = "active";
+  for (const s of nextStage.subtasks) {
+    if (!s.assignee_id) continue;
+    await assignTask(s.subtask_id, s.assignee_id).catch((err) =>
+      console.error(`[slack/events] failed to assign subtask ${s.subtask_id} for newly-active stage ${nextTeam} (non-fatal)`, err)
+    );
+  }
+  await updateProjectStagePlan(project.meeting_id, plan);
+
+  const who = nextStage.subtasks
+    .map((s) => s.assignee_name || (s.assignee_slack_id ? `<@${s.assignee_slack_id}>` : "unassigned"))
+    .join(", ");
+  await postMessage(
+    channelId,
+    `Now up: ${nextTeam}`,
+    [{
+      type: "section",
+      text: { type: "mrkdwn", text: `:arrow_right: *${currentTeam}* is done — now up: *${nextTeam}* (${who}).` },
+    }]
+  );
+}
+
 async function handleApproval(event, pending) {
   // Leave a record of what was actually reviewed on the ClickUp task itself
   // — the status flip alone tells nobody what was shared or who signed off.
@@ -96,6 +163,11 @@ async function handleApproval(event, pending) {
         text: `:white_check_mark: *${pending.subtask_name}* approved by <@${event.user}> — marked complete.`,
       },
     }]
+  );
+
+  const project = await getProjectByChannelId(event.channel).catch(() => null);
+  await advanceStageIfComplete(project, pending.subtask_id, event.channel).catch((err) =>
+    console.error(`[slack/events] stage advancement failed for subtask ${pending.subtask_id} (non-fatal)`, err)
   );
 }
 

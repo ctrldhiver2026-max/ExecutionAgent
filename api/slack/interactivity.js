@@ -60,8 +60,9 @@ export default async function handler(req, res) {
       await updateConfirmationStatus(action.value, "confirmed");
       await replaceMessage(payload, `:white_check_mark: Confirmed! Setting up *${confirmation.payload.project_name}*…`);
 
-      // Hand off to the pipeline: assignment → channel → ClickUp → notify
-      await runProjectCreation(confirmation);
+      // Hand off to the pipeline: assignment → channel → ClickUp → notify.
+      // payload.user.id is whoever clicked Yes — the project's default Owner.
+      await runProjectCreation(confirmation, { initiatorSlackId: payload.user.id });
       return res.status(200).end();
     }
 

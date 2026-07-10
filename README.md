@@ -128,6 +128,17 @@ create table pending_reviews (
 alter table pending_reviews add column if not exists share_text text;
 alter table pending_reviews add column if not exists share_url text;
 alter table pending_reviews add column if not exists completed_at timestamptz;
+
+-- REQUIRED migration (2026-07-10): sequential department handoff. Deliverables
+-- are now assigned one team at a time (content -> design -> dev -> video_design,
+-- lib/clickup.js's TEAM_ORDER) instead of all at once -- every subtask still
+-- gets created upfront so the whole plan is visible in ClickUp, but only the
+-- first team's subtasks are actually assigned; the rest activate automatically
+-- (assigned + announced in the channel) once the team ahead of them is fully
+-- approved via the Slack review flow. stage_plan holds that state. The code
+-- degrades gracefully if this hasn't run yet (creates the project without a
+-- plan, nothing advances, same as before this feature existed).
+alter table projects add column if not exists stage_plan jsonb;
 ```
 
 **Optional ingest lockdown:** `/api/meetings/ingest` is public. To require auth,
