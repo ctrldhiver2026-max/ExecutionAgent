@@ -119,25 +119,39 @@ async function handleApproval(event, pending) {
   const commentLines = [`Approved via Slack by ${approverName}.`];
   if (pending.share_text) commentLines.push(`Shared${assigneeName ? ` by ${assigneeName}` : ""}: ${pending.share_text}`);
   if (pending.share_url) commentLines.push(`Link: ${pending.share_url}`);
-  await addTaskComment(pending.subtask_id, commentLines.join("\n")).catch((err) =>
-    console.error(`[slack/events] ClickUp comment failed for subtask ${pending.subtask_id} (non-fatal)`, err)
-  );
 
-  await setTaskComplete(pending.subtask_id);
-  await completePendingReview(pending.id);
-  await postMessage(
-    event.channel,
-    `"${pending.subtask_name}" approved`,
-    [{
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `:white_check_mark: *${pending.subtask_name}* approved by <@${event.user}> — marked complete.`,
-      },
-    }]
-  );
+  // Latency fix (live incident 2026-07-10): this used to be 5 sequential
+  // network round trips, measured live at 3.6s+ before even reaching the
+  // Slack confirmation step — well past Slack's ~3s webhook ack window,
+  // risking exactly the silent "nothing happened" failure this was caught
+  // fixing. Comment + status-complete are independent ClickUp calls, safe
+  // to run together; setTaskComplete's success is NOT caught here (unlike
+  // the comment) so a failure still aborts before completePendingReview,
+  // preserving "pending_review is only marked complete if ClickUp actually
+  // is" — same invariant as before, just less sequential.
+  await Promise.all([
+    addTaskComment(pending.subtask_id, commentLines.join("\n")).catch((err) =>
+      console.error(`[slack/events] ClickUp comment failed for subtask ${pending.subtask_id} (non-fatal)`, err)
+    ),
+    setTaskComplete(pending.subtask_id),
+  ]);
 
-  const project = await getProjectByChannelId(event.channel).catch(() => null);
+  const [, , project] = await Promise.all([
+    completePendingReview(pending.id),
+    postMessage(
+      event.channel,
+      `"${pending.subtask_name}" approved`,
+      [{
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `:white_check_mark: *${pending.subtask_name}* approved by <@${event.user}> — marked complete.`,
+        },
+      }]
+    ),
+    getProjectByChannelId(event.channel).catch(() => null),
+  ]);
+
   await advanceStageIfComplete(project, pending.subtask_id).catch((err) =>
     console.error(`[slack/events] stage tracking update failed for subtask ${pending.subtask_id} (non-fatal)`, err)
   );
@@ -181,8 +195,13 @@ async function handleManagerApproval(event) {
   const targetTeam = teamsWithOpenWork[0];
   const openSubtasks = plan.stages[targetTeam].subtasks.filter((s) => !s.done);
 
+  // Latency fix (live incident 2026-07-10, same reasoning as handleApproval):
+  // process every open subtask in this stage concurrently, and within each
+  // subtask run its independent ClickUp calls concurrently too, instead of
+  // one long sequential chain — a multi-subtask stage could otherwise take
+  // several seconds per subtask, stacking well past Slack's ~3s ack window.
   const approverName = sender.name || event.user;
-  for (const s of openSubtasks) {
+  await Promise.all(openSubtasks.map(async (s) => {
     // Best-effort: if someone already shared a link for this specific
     // subtask via the targeted flow, pull that into the ClickUp comment and
     // consume the row so it doesn't linger as permanently "open".
@@ -190,24 +209,28 @@ async function handleManagerApproval(event) {
     const commentLines = [`Approved via Slack by ${approverName}.`];
     if (shareContext?.share_text) commentLines.push(`Shared: ${shareContext.share_text}`);
     if (shareContext?.share_url) commentLines.push(`Link: ${shareContext.share_url}`);
-    await addTaskComment(s.subtask_id, commentLines.join("\n")).catch((err) =>
-      console.error(`[slack/events] ClickUp comment failed for subtask ${s.subtask_id} (non-fatal)`, err)
-    );
-    await setTaskComplete(s.subtask_id);
+    await Promise.all([
+      addTaskComment(s.subtask_id, commentLines.join("\n")).catch((err) =>
+        console.error(`[slack/events] ClickUp comment failed for subtask ${s.subtask_id} (non-fatal)`, err)
+      ),
+      setTaskComplete(s.subtask_id),
+    ]);
     if (shareContext) await completePendingReview(shareContext.id).catch(() => null);
     s.done = true;
-  }
+  }));
   plan.stages[targetTeam].status = "done";
-  await updateProjectStagePlan(project.meeting_id, plan);
 
-  await postMessage(
-    event.channel,
-    `${targetTeam} approved`,
-    [{
-      type: "section",
-      text: { type: "mrkdwn", text: `:white_check_mark: *${targetTeam}* approved by <@${event.user}> — marked complete.` },
-    }]
-  );
+  await Promise.all([
+    updateProjectStagePlan(project.meeting_id, plan),
+    postMessage(
+      event.channel,
+      `${targetTeam} approved`,
+      [{
+        type: "section",
+        text: { type: "mrkdwn", text: `:white_check_mark: *${targetTeam}* approved by <@${event.user}> — marked complete.` },
+      }]
+    ),
+  ]);
   return true;
 }
 
@@ -234,6 +257,26 @@ async function handleReviewRequest(event) {
   const subtask = await findOpenSubtaskForAssignee(project.clickup_task_id, clickupMemberId);
   if (!subtask) {
     console.log(`[slack/events] no single open subtask for ${sender.email} in project "${project.project_name}" — skipping (ambiguous or none)`);
+    return;
+  }
+
+  // Live incident 2026-07-10: the same "share for review" message got
+  // processed twice (message re-sent, or a delivery quirk), creating two
+  // separate pending_reviews rows for the same subtask — not itself
+  // harmful (getLatestPendingReview just uses whichever is newest), but
+  // messy and confusing. If one's already open for this exact subtask,
+  // don't create another — just re-post the acknowledgment so it's clear
+  // the request was heard, without duplicating the tracking row.
+  const alreadyPending = await getLatestPendingReviewForSubtask(subtask.id).catch(() => null);
+  if (alreadyPending) {
+    await postMessage(
+      event.channel,
+      `Still waiting on <@${alreadyPending.approver_slack_id}> to review "${subtask.name}"`,
+      [{
+        type: "section",
+        text: { type: "mrkdwn", text: `:eyes: Already waiting on <@${alreadyPending.approver_slack_id}> for *${subtask.name}*.` },
+      }]
+    );
     return;
   }
 
