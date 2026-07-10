@@ -21,6 +21,7 @@ import {
   getRosterMemberBySlackId,
   createPendingReview,
   getLatestPendingReview,
+  getLatestPendingReviewForSubtask,
   completePendingReview,
   updateProjectStagePlan,
 } from "../../lib/db.js";
@@ -171,6 +172,65 @@ async function handleApproval(event, pending) {
   );
 }
 
+/**
+ * Manager blanket-approval (2026-07-10): the project's Owner (dashboard's
+ * held_by_id — defaults to whoever confirmed the project) can approve the
+ * WHOLE currently-active stage with a bare "approved"/"done"/etc., no
+ * @mention needed first. This is a fallback checked only when the targeted
+ * per-person flow (handleApproval, via a pending_reviews row keyed to THIS
+ * sender) doesn't match — so a specifically-tagged reviewer's approval still
+ * takes precedence and only closes their own subtask. Returns false (so the
+ * caller falls through to handleReviewRequest) if the sender isn't this
+ * project's Owner, or there's no active stage with anything open to approve.
+ */
+async function handleManagerApproval(event) {
+  const project = await getProjectByChannelId(event.channel).catch(() => null);
+  if (!project || !project.held_by_id || !project.stage_plan) return false;
+
+  const sender = await getRosterMemberBySlackId(event.user).catch(() => null);
+  if (!sender || sender.id !== project.held_by_id) return false;
+
+  const plan = project.stage_plan;
+  const activeTeam = Array.isArray(plan.order) ? plan.order.find((team) => plan.stages[team]?.status === "active") : null;
+  if (!activeTeam) return false;
+  const openSubtasks = plan.stages[activeTeam].subtasks.filter((s) => !s.done);
+  if (!openSubtasks.length) return false;
+
+  const approverName = sender.name || event.user;
+  for (const s of openSubtasks) {
+    // Best-effort: if someone already shared a link for this specific
+    // subtask via the targeted flow, pull that into the ClickUp comment and
+    // consume the row so it doesn't linger as permanently "open".
+    const shareContext = await getLatestPendingReviewForSubtask(s.subtask_id).catch(() => null);
+    const commentLines = [`Approved via Slack by ${approverName}.`];
+    if (shareContext?.share_text) commentLines.push(`Shared: ${shareContext.share_text}`);
+    if (shareContext?.share_url) commentLines.push(`Link: ${shareContext.share_url}`);
+    await addTaskComment(s.subtask_id, commentLines.join("\n")).catch((err) =>
+      console.error(`[slack/events] ClickUp comment failed for subtask ${s.subtask_id} (non-fatal)`, err)
+    );
+    await setTaskComplete(s.subtask_id);
+    if (shareContext) await completePendingReview(shareContext.id).catch(() => null);
+    s.done = true;
+  }
+
+  await postMessage(
+    event.channel,
+    `${activeTeam} approved`,
+    [{
+      type: "section",
+      text: { type: "mrkdwn", text: `:white_check_mark: *${activeTeam}* approved by <@${event.user}> — marked complete.` },
+    }]
+  );
+
+  // Reuses the same advancement logic as the targeted flow — plan is already
+  // mutated above (all this stage's subtasks marked done), so it'll see the
+  // stage is fully closed and activate the next one.
+  await advanceStageIfComplete(project, openSubtasks[0].subtask_id, event.channel).catch((err) =>
+    console.error(`[slack/events] stage advancement failed for stage ${activeTeam} (non-fatal)`, err)
+  );
+  return true;
+}
+
 async function handleReviewRequest(event) {
   const mentionMatch = event.text.match(MENTION_RE);
   const urlMatch = event.text.match(URL_RE);
@@ -240,8 +300,15 @@ async function handleChannelMessage(event) {
       await handleApproval(event, pending);
       return;
     }
-    // Not this person's word to give right now (no pending review waiting
-    // on them in this channel) — say nothing, not every "done" is ours.
+    // Not tagged as the expected approver for anything specific — but the
+    // project's Owner/manager can still approve the whole active stage
+    // directly, no @mention required (see handleManagerApproval).
+    const handledByManager = await handleManagerApproval(event).catch((err) => {
+      console.error("[slack/events] manager approval failed (non-fatal)", err);
+      return false;
+    });
+    if (handledByManager) return;
+    // Neither matched — say nothing, not every "done" is ours.
   }
 
   await handleReviewRequest(event);
