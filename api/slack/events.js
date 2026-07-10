@@ -157,11 +157,15 @@ async function handleReviewRequest(event) {
   const urlMatch = event.text.match(URL_RE);
   // A link is no longer required (2026-07-10) — "@stakeholder this is done,
   // please approve" should trigger the buttons just as much as one with a
-  // link attached. A mention alone is a broader net (any message mentioning
-  // a teammate in a tracked channel could match), but it's still scoped by
-  // the sender-has-exactly-one-open-subtask check below, so it can't fire
-  // for someone with nothing to review.
+  // link attached. But a BARE mention with nothing else ("@hari.k") isn't a
+  // share-for-review message either — live incident 2026-07-10: someone
+  // pinging a teammate for an unrelated reason had it happen to fire a
+  // review request for THEIR OWN task, purely because they had exactly one
+  // open subtask at the time. Require some real content beyond the mention
+  // (and any URL) so a bare "@name" can't misfire.
   if (!mentionMatch) return; // not a message aimed at anyone in particular
+  const remainingText = event.text.replace(MENTION_RE_G, "").replace(URL_RE_G, "").trim();
+  if (!remainingText) return; // just a mention, nothing else — not a share
 
   const project = await getProjectByChannelId(event.channel);
   if (!project || !project.clickup_task_id) return; // not a tracked project channel
