@@ -4,18 +4,22 @@
 // Requires the `message.channels` event subscription + `channels:history`
 // bot scope (Reinstall to Workspace after adding either).
 //
-// Review-approval flow — entirely plain-text, no slash command, no buttons:
-//   1. An assignee posts "@approver here's the landing page: <figma link>"
-//      in their project's channel. If that channel is a tracked project AND
-//      the sender has exactly one open ClickUp subtask there, we remember
-//      "this person is expected to approve this subtask" (pending_reviews)
-//      and post a plain acknowledgement — nothing interactive.
-//   2. Later, the mentioned approver posts a separate plain message like
-//      "Done" / "Looks good" / "Approved" in THAT SAME channel. That alone
-//      is the approval: the remembered subtask is marked complete in
-//      ClickUp and a confirmation goes out in the channel (already has the
-//      whole team in it, so that's the "team gets notified" step too).
-import { verifySlackSignature, postMessage } from "../../lib/slack.js";
+// Review-approval flow (2026-07-10: buttons are the primary path, plain
+// text still works as a fallback — see api/slack/interactivity.js for the
+// button-click handlers, lib/reviewFlow.js for the shared close-out logic):
+//   1. An assignee posts "@approver here's the landing page" (a link is
+//      optional now — a mention alone is enough) in their project's
+//      channel. If that channel is a tracked project AND the sender has
+//      exactly one open ClickUp subtask there, we remember "this person is
+//      expected to approve this subtask" (pending_reviews) and post an
+//      "Approve" / "Add comments" button message.
+//   2. The mentioned approver either clicks "Approve" (interactivity.js),
+//      or posts a separate plain message like "Done" / "Looks good" /
+//      "Approved" in THAT SAME channel (handled here) — either way closes
+//      the subtask out, marks it complete in ClickUp, and confirms in the
+//      channel (already has the whole team in it, so that's the "team gets
+//      notified" step too).
+import { verifySlackSignature, postMessage, sendReviewButtons } from "../../lib/slack.js";
 import {
   getProjectByChannelId,
   getRosterMemberBySlackId,
@@ -26,6 +30,7 @@ import {
   updateProjectStagePlan,
 } from "../../lib/db.js";
 import { findClickUpMemberIdByEmail, findOpenSubtaskForAssignee, setTaskComplete, addTaskComment } from "../../lib/clickup.js";
+import { displayName, approvePendingReview } from "../../lib/reviewFlow.js";
 
 export const config = { api: { bodyParser: false } };
 
@@ -52,12 +57,6 @@ function cleanSlackText(text) {
   return text.replace(MENTION_RE_G, "@$1").replace(URL_RE_G, "$1").trim();
 }
 
-/** Roster display name for a Slack user id, falling back to the raw id if unresolved (e.g. approver was never on a call). Plain text, not Slack mention markup — the only consumer is ClickUp comments, which don't render <@id>. */
-async function displayName(slackId) {
-  const member = await getRosterMemberBySlackId(slackId).catch(() => null);
-  return member?.name || slackId;
-}
-
 // Deliberately short, common phrases — a whole-message match (after
 // stripping punctuation), not a substring search, so a longer sentence that
 // happens to contain the word "done" ("I'm not done yet") doesn't misfire.
@@ -71,90 +70,9 @@ function isApprovalMessage(text) {
   return APPROVAL_PHRASES.has(normalized);
 }
 
-/**
- * Completion tracking (2026-07-10, reverted from an earlier sequential
- * content->design->dev->video_design handoff — teams work in parallel now,
- * every subtask is already assigned from creation, see lib/clickup.js's
- * TEAM_ORDER comment). Marks the just-approved subtask done in the plan and,
- * once every subtask in its team is done, flips that team's status to
- * "done" — purely for the dashboard Timeline / handleManagerApproval's
- * "which team still has open work" check, no further action taken since
- * there's no "next" team waiting to be unlocked anymore. No-op if there's no
- * stage_plan (pre-migration).
- *
- * Known limitation: stage_plan is read-modified-written as a single JSON
- * blob, so two approvals landing at the exact same moment could race and
- * one's `done` flag could be lost. Acceptable at this app's scale (a
- * handful of people approving one at a time) — not worth the complexity of
- * optimistic locking for a hackathon project.
- */
-async function advanceStageIfComplete(project, doneSubtaskId) {
-  const plan = project?.stage_plan;
-  if (!plan || !Array.isArray(plan.order) || !plan.stages) return;
-
-  let currentTeam = null;
-  for (const team of plan.order) {
-    const subtask = plan.stages[team]?.subtasks?.find((s) => s.subtask_id === doneSubtaskId);
-    if (subtask) {
-      subtask.done = true;
-      currentTeam = team;
-      break;
-    }
-  }
-  if (!currentTeam) return; // this subtask isn't tracked by the stage plan
-
-  const currentStage = plan.stages[currentTeam];
-  if (currentStage.subtasks.every((s) => s.done)) currentStage.status = "done";
-  await updateProjectStagePlan(project.meeting_id, plan);
-}
-
+/** Plain-text "approved" reply — delegates to the same close-out logic the "Approve" button uses (lib/reviewFlow.js), so both paths behave identically. */
 async function handleApproval(event, pending) {
-  // Leave a record of what was actually reviewed on the ClickUp task itself
-  // — the status flip alone tells nobody what was shared or who signed off.
-  // Non-fatal: a comment failure shouldn't block marking the task done.
-  const [approverName, assigneeName] = await Promise.all([
-    displayName(event.user),
-    pending.assignee_slack_id ? displayName(pending.assignee_slack_id) : null,
-  ]);
-  const commentLines = [`Approved via Slack by ${approverName}.`];
-  if (pending.share_text) commentLines.push(`Shared${assigneeName ? ` by ${assigneeName}` : ""}: ${pending.share_text}`);
-  if (pending.share_url) commentLines.push(`Link: ${pending.share_url}`);
-
-  // Latency fix (live incident 2026-07-10): this used to be 5 sequential
-  // network round trips, measured live at 3.6s+ before even reaching the
-  // Slack confirmation step — well past Slack's ~3s webhook ack window,
-  // risking exactly the silent "nothing happened" failure this was caught
-  // fixing. Comment + status-complete are independent ClickUp calls, safe
-  // to run together; setTaskComplete's success is NOT caught here (unlike
-  // the comment) so a failure still aborts before completePendingReview,
-  // preserving "pending_review is only marked complete if ClickUp actually
-  // is" — same invariant as before, just less sequential.
-  await Promise.all([
-    addTaskComment(pending.subtask_id, commentLines.join("\n")).catch((err) =>
-      console.error(`[slack/events] ClickUp comment failed for subtask ${pending.subtask_id} (non-fatal)`, err)
-    ),
-    setTaskComplete(pending.subtask_id),
-  ]);
-
-  const [, , project] = await Promise.all([
-    completePendingReview(pending.id),
-    postMessage(
-      event.channel,
-      `"${pending.subtask_name}" approved`,
-      [{
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `:white_check_mark: *${pending.subtask_name}* approved by <@${event.user}> — marked complete.`,
-        },
-      }]
-    ),
-    getProjectByChannelId(event.channel).catch(() => null),
-  ]);
-
-  await advanceStageIfComplete(project, pending.subtask_id).catch((err) =>
-    console.error(`[slack/events] stage tracking update failed for subtask ${pending.subtask_id} (non-fatal)`, err)
-  );
+  await approvePendingReview(pending, event.user, event.channel);
 }
 
 /**
@@ -237,7 +155,13 @@ async function handleManagerApproval(event) {
 async function handleReviewRequest(event) {
   const mentionMatch = event.text.match(MENTION_RE);
   const urlMatch = event.text.match(URL_RE);
-  if (!mentionMatch || !urlMatch) return; // not a "share for review" message
+  // A link is no longer required (2026-07-10) — "@stakeholder this is done,
+  // please approve" should trigger the buttons just as much as one with a
+  // link attached. A mention alone is a broader net (any message mentioning
+  // a teammate in a tracked channel could match), but it's still scoped by
+  // the sender-has-exactly-one-open-subtask check below, so it can't fire
+  // for someone with nothing to review.
+  if (!mentionMatch) return; // not a message aimed at anyone in particular
 
   const project = await getProjectByChannelId(event.channel);
   if (!project || !project.clickup_task_id) return; // not a tracked project channel
@@ -287,26 +211,19 @@ async function handleReviewRequest(event) {
   // mentions in the message still fall back to the raw id, which is fine.
   const approverName = await displayName(approverSlackId);
   const shareText = cleanSlackText(event.text).replace(`@${approverSlackId}`, `@${approverName}`);
-  await createPendingReview({
+  const pending = await createPendingReview({
     channel_id: event.channel,
     subtask_id: subtask.id,
     subtask_name: subtask.name,
     assignee_slack_id: event.user,
     approver_slack_id: approverSlackId,
     share_text: shareText,
-    share_url: urlMatch[1],
+    share_url: urlMatch ? urlMatch[1] : null,
   });
-  await postMessage(
-    event.channel,
-    `Waiting on <@${approverSlackId}> to review "${subtask.name}"`,
-    [{
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `:eyes: Got it — <@${approverSlackId}>, reply here with something like *"Approved"* once *${subtask.name}* looks good.`,
-      },
-    }]
-  );
+  // Buttons are the primary path (2026-07-10); replying with a plain
+  // "approved" still works too (isApprovalMessage/handleApproval, above) —
+  // this is additive, not a replacement.
+  await sendReviewButtons(event.channel, approverSlackId, subtask.name, pending.id);
 }
 
 async function handleChannelMessage(event) {

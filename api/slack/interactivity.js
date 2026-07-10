@@ -2,9 +2,11 @@
 // Slack Interactivity Request URL → https://execution-agent.vercel.app/api/slack/interactivity
 // Slack sends button clicks here as application/x-www-form-urlencoded with a `payload` field.
 
-import { verifySlackSignature, slackApi } from "../../lib/slack.js";
-import { getPendingConfirmation, updateConfirmationStatus } from "../../lib/db.js";
+import { verifySlackSignature, slackApi, postMessage, openReviewCommentModal } from "../../lib/slack.js";
+import { getPendingConfirmation, updateConfirmationStatus, getPendingReviewById } from "../../lib/db.js";
 import { runProjectCreation } from "../../lib/orchestrator.js";
+import { approvePendingReview, displayName } from "../../lib/reviewFlow.js";
+import { addTaskComment } from "../../lib/clickup.js";
 
 // Vercel: disable body parsing so we can verify the raw body signature.
 export const config = { api: { bodyParser: false } };
@@ -30,17 +32,48 @@ export default async function handler(req, res) {
   const params = new URLSearchParams(rawBody);
   const payload = JSON.parse(params.get("payload"));
 
-  const action = payload.actions?.[0];
-  if (!action) return res.status(200).end();
-
   // Slack retries the same interaction if it doesn't get a response in
-  // time (marked with this header). Since we now await the full flow
-  // before responding, a slow-but-still-in-progress first attempt could
-  // get retried — ack without reprocessing so we don't double-create the
-  // channel/ticket/DB row.
+  // time (marked with this header) — applies to both button clicks and
+  // modal submissions, so check it before branching on payload type.
   if (req.headers["x-slack-retry-num"]) {
     return res.status(200).end();
   }
+
+  // Modal submission ("Add comments") — a completely different payload
+  // shape from a button click (payload.type === "view_submission", no
+  // payload.actions array), so it has to be handled before the
+  // block_actions branch below or it'd just hit the "no action" early return.
+  if (payload.type === "view_submission" && payload.view?.callback_id === "review_comment_modal") {
+    try {
+      const { pendingReviewId, channelId } = JSON.parse(payload.view.private_metadata || "{}");
+      const commentText = payload.view.state?.values?.comment_block?.comment_input?.value?.trim();
+      const pending = pendingReviewId ? await getPendingReviewById(pendingReviewId) : null;
+      if (pending && commentText) {
+        const commenterName = await displayName(payload.user.id);
+        await Promise.all([
+          postMessage(
+            channelId,
+            `Feedback on "${pending.subtask_name}"`,
+            [{
+              type: "section",
+              text: { type: "mrkdwn", text: `:speech_balloon: <@${payload.user.id}> on *${pending.subtask_name}*:\n${commentText}` },
+            }]
+          ),
+          addTaskComment(pending.subtask_id, `Feedback from ${commenterName} (via Slack):\n${commentText}`).catch((err) =>
+            console.error(`[interactivity] ClickUp comment failed for subtask ${pending.subtask_id} (non-fatal)`, err)
+          ),
+        ]);
+      }
+    } catch (err) {
+      console.error("[interactivity] review comment submission failed (non-fatal)", err);
+    }
+    // Empty 200 closes the modal — no response_action needed for a
+    // straightforward single-input form with nothing left to validate.
+    return res.status(200).end();
+  }
+
+  const action = payload.actions?.[0];
+  if (!action) return res.status(200).end();
 
   // ── DO THE WORK, THEN ACK ────────────────────────────────────────────
   // Slack requires a response within 3s. We used to ack first and keep
@@ -81,6 +114,33 @@ export default async function handler(req, res) {
 
       // Resume the pipeline with the chosen designer
       await runProjectCreation(confirmation, { designerSlackId });
+      return res.status(200).end();
+    }
+
+    if (action.action_id === "review_approve") {
+      const pending = await getPendingReviewById(action.value);
+      if (!pending || pending.completed_at) {
+        await replaceMessage(payload, ":warning: This review was already handled.");
+        return res.status(200).end();
+      }
+      await approvePendingReview(pending, payload.user.id, payload.channel.id);
+      await replaceMessage(payload, `:white_check_mark: *${pending.subtask_name}* approved by <@${payload.user.id}>.`);
+      return res.status(200).end();
+    }
+
+    if (action.action_id === "review_comment") {
+      const pending = await getPendingReviewById(action.value);
+      if (!pending || pending.completed_at) {
+        await replaceMessage(payload, ":warning: This review was already handled.");
+        return res.status(200).end();
+      }
+      // trigger_id is only valid for ~3s — the single lookup above is the
+      // only thing allowed to happen before this call.
+      await openReviewCommentModal(payload.trigger_id, {
+        pendingReviewId: pending.id,
+        channelId: payload.channel.id,
+        subtaskName: pending.subtask_name,
+      });
       return res.status(200).end();
     }
 
