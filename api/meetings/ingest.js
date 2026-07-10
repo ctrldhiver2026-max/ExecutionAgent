@@ -82,6 +82,11 @@ async function triggerConfirmation({ meeting_id, extracted, attendees }) {
       due_dates: extracted.due_dates,
       project_due_date: extracted.project_due_date,
       attendees: resolvedAttendees,
+      // extraction's summary (the MOM) -- postProjectKickoff reads this off
+      // confirmation.payload.summary; it was extracted but never made it
+      // into the stored payload, so the kickoff message's summary block
+      // silently had nothing to show (live incident 2026-07-10).
+      summary: extracted.summary,
     };
     const confirmation = await createPendingConfirmation(project);
     await sendConfirmationDm(initiatorSlackId, project.project_name, confirmation.id);
