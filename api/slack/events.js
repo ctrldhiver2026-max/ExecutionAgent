@@ -25,7 +25,7 @@ import {
   completePendingReview,
   updateProjectStagePlan,
 } from "../../lib/db.js";
-import { findClickUpMemberIdByEmail, findOpenSubtaskForAssignee, setTaskComplete, addTaskComment, assignTask } from "../../lib/clickup.js";
+import { findClickUpMemberIdByEmail, findOpenSubtaskForAssignee, setTaskComplete, addTaskComment } from "../../lib/clickup.js";
 
 export const config = { api: { bodyParser: false } };
 
@@ -72,20 +72,23 @@ function isApprovalMessage(text) {
 }
 
 /**
- * Sequential department handoff (2026-07-10): a project's deliverables are
- * assigned one team at a time (content -> design -> dev -> video_design, per
- * lib/clickup.js's TEAM_ORDER). When the subtask that just got approved
- * closes out its whole team's stage, activate the next pending stage —
- * assign its subtasks in ClickUp and announce it in the channel. No-op if
- * there's no stage_plan (pre-migration, or nothing left to hand off to).
+ * Completion tracking (2026-07-10, reverted from an earlier sequential
+ * content->design->dev->video_design handoff — teams work in parallel now,
+ * every subtask is already assigned from creation, see lib/clickup.js's
+ * TEAM_ORDER comment). Marks the just-approved subtask done in the plan and,
+ * once every subtask in its team is done, flips that team's status to
+ * "done" — purely for the dashboard Timeline / handleManagerApproval's
+ * "which team still has open work" check, no further action taken since
+ * there's no "next" team waiting to be unlocked anymore. No-op if there's no
+ * stage_plan (pre-migration).
  *
  * Known limitation: stage_plan is read-modified-written as a single JSON
- * blob, so two approvals in the very same stage landing at the exact same
- * moment could race and one's `done` flag could be lost. Acceptable at this
- * app's scale (a handful of people approving one at a time) — not worth the
- * complexity of optimistic locking for a hackathon project.
+ * blob, so two approvals landing at the exact same moment could race and
+ * one's `done` flag could be lost. Acceptable at this app's scale (a
+ * handful of people approving one at a time) — not worth the complexity of
+ * optimistic locking for a hackathon project.
  */
-async function advanceStageIfComplete(project, doneSubtaskId, channelId) {
+async function advanceStageIfComplete(project, doneSubtaskId) {
   const plan = project?.stage_plan;
   if (!plan || !Array.isArray(plan.order) || !plan.stages) return;
 
@@ -101,40 +104,8 @@ async function advanceStageIfComplete(project, doneSubtaskId, channelId) {
   if (!currentTeam) return; // this subtask isn't tracked by the stage plan
 
   const currentStage = plan.stages[currentTeam];
-  if (!currentStage.subtasks.every((s) => s.done)) {
-    await updateProjectStagePlan(project.meeting_id, plan); // persist this subtask's done flag either way
-    return;
-  }
-  currentStage.status = "done";
-
-  const currentIdx = plan.order.indexOf(currentTeam);
-  const nextTeam = plan.order.slice(currentIdx + 1).find((team) => plan.stages[team].status === "pending");
-  if (!nextTeam) {
-    await updateProjectStagePlan(project.meeting_id, plan);
-    return;
-  }
-
-  const nextStage = plan.stages[nextTeam];
-  nextStage.status = "active";
-  for (const s of nextStage.subtasks) {
-    if (!s.assignee_id) continue;
-    await assignTask(s.subtask_id, s.assignee_id).catch((err) =>
-      console.error(`[slack/events] failed to assign subtask ${s.subtask_id} for newly-active stage ${nextTeam} (non-fatal)`, err)
-    );
-  }
+  if (currentStage.subtasks.every((s) => s.done)) currentStage.status = "done";
   await updateProjectStagePlan(project.meeting_id, plan);
-
-  const who = nextStage.subtasks
-    .map((s) => s.assignee_name || (s.assignee_slack_id ? `<@${s.assignee_slack_id}>` : "unassigned"))
-    .join(", ");
-  await postMessage(
-    channelId,
-    `Now up: ${nextTeam}`,
-    [{
-      type: "section",
-      text: { type: "mrkdwn", text: `:arrow_right: *${currentTeam}* is done — now up: *${nextTeam}* (${who}).` },
-    }]
-  );
 }
 
 async function handleApproval(event, pending) {
@@ -167,21 +138,29 @@ async function handleApproval(event, pending) {
   );
 
   const project = await getProjectByChannelId(event.channel).catch(() => null);
-  await advanceStageIfComplete(project, pending.subtask_id, event.channel).catch((err) =>
-    console.error(`[slack/events] stage advancement failed for subtask ${pending.subtask_id} (non-fatal)`, err)
+  await advanceStageIfComplete(project, pending.subtask_id).catch((err) =>
+    console.error(`[slack/events] stage tracking update failed for subtask ${pending.subtask_id} (non-fatal)`, err)
   );
 }
 
 /**
  * Manager blanket-approval (2026-07-10): the project's Owner (dashboard's
- * held_by_id — defaults to whoever confirmed the project) can approve the
- * WHOLE currently-active stage with a bare "approved"/"done"/etc., no
- * @mention needed first. This is a fallback checked only when the targeted
- * per-person flow (handleApproval, via a pending_reviews row keyed to THIS
- * sender) doesn't match — so a specifically-tagged reviewer's approval still
- * takes precedence and only closes their own subtask. Returns false (so the
- * caller falls through to handleReviewRequest) if the sender isn't this
- * project's Owner, or there's no active stage with anything open to approve.
+ * held_by_id — defaults to whoever confirmed the project) can approve a
+ * team's outstanding work with a bare "approved"/"done"/etc., no @mention
+ * needed first. This is a fallback checked only when the targeted per-person
+ * flow (handleApproval, via a pending_reviews row keyed to THIS sender)
+ * doesn't match — so a specifically-tagged reviewer's approval still takes
+ * precedence and only closes their own subtask.
+ *
+ * Since every team is assigned and can be worked in parallel (2026-07-10,
+ * see lib/clickup.js's TEAM_ORDER comment), a bare "approved" with no target
+ * is ambiguous the moment more than one team still has open work — this
+ * only acts when EXACTLY ONE team has anything outstanding, same
+ * refuse-to-guess rule lib/roster.js already uses for ambiguous name
+ * matches. Returns false (falls through to handleReviewRequest) if the
+ * sender isn't this project's Owner, nothing is open, or more than one team
+ * still has open work (too ambiguous to auto-approve — use the targeted
+ * @mention flow instead).
  */
 async function handleManagerApproval(event) {
   const project = await getProjectByChannelId(event.channel).catch(() => null);
@@ -191,10 +170,16 @@ async function handleManagerApproval(event) {
   if (!sender || sender.id !== project.held_by_id) return false;
 
   const plan = project.stage_plan;
-  const activeTeam = Array.isArray(plan.order) ? plan.order.find((team) => plan.stages[team]?.status === "active") : null;
-  if (!activeTeam) return false;
-  const openSubtasks = plan.stages[activeTeam].subtasks.filter((s) => !s.done);
-  if (!openSubtasks.length) return false;
+  if (!Array.isArray(plan.order)) return false;
+  const teamsWithOpenWork = plan.order.filter((team) => plan.stages[team]?.subtasks?.some((s) => !s.done));
+  if (teamsWithOpenWork.length !== 1) {
+    if (teamsWithOpenWork.length > 1) {
+      console.log(`[slack/events] "${event.text}" from project owner but ${teamsWithOpenWork.length} teams have open work — too ambiguous to auto-approve, use @mention instead`);
+    }
+    return false;
+  }
+  const targetTeam = teamsWithOpenWork[0];
+  const openSubtasks = plan.stages[targetTeam].subtasks.filter((s) => !s.done);
 
   const approverName = sender.name || event.user;
   for (const s of openSubtasks) {
@@ -212,21 +197,16 @@ async function handleManagerApproval(event) {
     if (shareContext) await completePendingReview(shareContext.id).catch(() => null);
     s.done = true;
   }
+  plan.stages[targetTeam].status = "done";
+  await updateProjectStagePlan(project.meeting_id, plan);
 
   await postMessage(
     event.channel,
-    `${activeTeam} approved`,
+    `${targetTeam} approved`,
     [{
       type: "section",
-      text: { type: "mrkdwn", text: `:white_check_mark: *${activeTeam}* approved by <@${event.user}> — marked complete.` },
+      text: { type: "mrkdwn", text: `:white_check_mark: *${targetTeam}* approved by <@${event.user}> — marked complete.` },
     }]
-  );
-
-  // Reuses the same advancement logic as the targeted flow — plan is already
-  // mutated above (all this stage's subtasks marked done), so it'll see the
-  // stage is fully closed and activate the next one.
-  await advanceStageIfComplete(project, openSubtasks[0].subtask_id, event.channel).catch((err) =>
-    console.error(`[slack/events] stage advancement failed for stage ${activeTeam} (non-fatal)`, err)
   );
   return true;
 }
