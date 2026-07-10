@@ -31,6 +31,16 @@
   const transcript = []; // [{ speaker, text, ts }]
   const lineIndexByNode = new WeakMap(); // caption block DOM node -> transcript index
   const attendees = new Set();
+  // Meet captions the local user's own speech as the bare placeholder "You"
+  // (not their real name) — learned from the People panel, where the local
+  // user's row is labeled "Real Name (You)" (see cleanName's (You)-suffix
+  // strip below). Live incident 2026-07-10: the local user's speech was
+  // captured as speaker "You" in every transcript line AND they were
+  // missing from `attendees` entirely — Claude's extraction then literally
+  // assigned deliverables to an owner named "You", which obviously matches
+  // nobody in the roster, and the meeting organizer never got invited to
+  // their own project's Slack channel.
+  let localUserName = null;
 
   function meetingIdFromUrl() {
     return location.pathname.replace(/^\/+/, '').split('?')[0];
@@ -64,14 +74,21 @@
       // copy added to `attendees`, leaving the raw "& N others" pollution
       // sitting in transcript.speaker (visible on the dashboard and fed to
       // extraction as the speaker label).
-      const speaker = cleanName(nameEl?.textContent.trim()) || 'Unknown';
+      let speaker = cleanName(nameEl?.textContent.trim()) || 'Unknown';
+      // Substitute the real name for Meet's "You" placeholder as soon as
+      // it's known (learned from the People panel — see captureAttendees).
+      // Before that's happened (e.g. the local user speaks in the first
+      // couple seconds, before the panel's first poll), this still can't
+      // resolve to a real name — captureAttendees retroactively patches
+      // those early lines once localUserName becomes known.
+      if (speaker === 'You' && localUserName) speaker = localUserName;
       const text = textEl.textContent.trim();
       const ts = new Date().toISOString();
 
       // Whoever speaks is definitely an attendee — this is more reliable
       // than the People panel / video tiles, which aren't always rendered.
-      // Meet captions your own speech as the placeholder "You", not your
-      // real name — that's not an identity, so don't count it as one.
+      // If speaker is still the bare "You" placeholder (real name not
+      // learned yet), it's not a usable identity — don't count it.
       if (speaker !== 'Unknown' && speaker !== 'You') {
         attendees.add(speaker);
       }
@@ -94,8 +111,21 @@
     // unrelated on-screen text, so we don't use them. Caption speakers
     // (captureCaptionLines) fill the gap when the panel isn't open.
     document.querySelectorAll(PEOPLE_PANEL_ROW_SELECTOR).forEach((el) => {
-      const name = cleanName(el.getAttribute('aria-label'));
-      if (name) attendees.add(name);
+      const raw = el.getAttribute('aria-label') || '';
+      const name = cleanName(raw);
+      if (!name) return;
+      // The local user's own row is labeled "Real Name (You)" — cleanName
+      // already strips that suffix above, so `name` here is their real
+      // name; just need to notice this WAS the (You) row to learn it.
+      if (/\(You\)\s*$/.test(raw) && localUserName !== name) {
+        localUserName = name;
+        // Retroactively fix any caption lines already captured under the
+        // "You" placeholder before we learned the real name.
+        transcript.forEach((line) => {
+          if (line.speaker === 'You') line.speaker = name;
+        });
+      }
+      attendees.add(name);
     });
   }
 

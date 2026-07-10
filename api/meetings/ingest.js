@@ -5,7 +5,12 @@
 // confirm the project before the rest of the pipeline (Slack channel +
 // ClickUp tickets) runs.
 import { extractProject } from "../../lib/extraction.js";
-import { createMeetingRecord, createPendingConfirmation } from "../../lib/db.js";
+import {
+  createMeetingRecord,
+  createPendingConfirmation,
+  getRecentMeetingByMeetingId,
+  updateMeetingRecord,
+} from "../../lib/db.js";
 import { resolveAttendees, getOrCreateAttendeeIdentity, inferMissingTeams } from "../../lib/roster.js";
 import { findEventByMeetCode } from "../../lib/google.js";
 import { sendConfirmationDm } from "../../lib/slack.js";
@@ -16,10 +21,19 @@ const MAX_TRANSCRIPT_LINES = 3000;
 const MAX_LINE_CHARS = 4000;
 const MAX_ATTENDEES = 100;
 
-/** Persist the meeting; capture already succeeded, so a DB failure only logs. */
-async function persistMeeting({ meeting_id, ended_at, attendees, transcript, extracted }) {
+/**
+ * Persist the meeting; capture already succeeded, so a DB failure only logs.
+ * updateId set means this is a merge into an existing row (see the
+ * duplicate-capture dedup in the handler below) — UPDATE instead of INSERT
+ * so it doesn't show up as a second card on the dashboard.
+ */
+async function persistMeeting({ meeting_id, ended_at, attendees, transcript, extracted, updateId }) {
   try {
-    await createMeetingRecord({ meeting_id, ended_at, attendees, transcript, extracted });
+    if (updateId) {
+      await updateMeetingRecord(updateId, { ended_at, attendees, transcript, extracted });
+    } else {
+      await createMeetingRecord({ meeting_id, ended_at, attendees, transcript, extracted });
+    }
   } catch (err) {
     console.error("[meetings/ingest] persistence failed", err);
   }
@@ -155,7 +169,7 @@ export default async function handler(req, res) {
     res.status(400).json({ error: "Invalid payload" });
     return;
   }
-  const { meeting_id, transcript, attendees, ended_at } = payload;
+  let { meeting_id, transcript, attendees, ended_at } = payload;
 
   console.log("[meetings/ingest]", {
     meeting_id,
@@ -164,11 +178,36 @@ export default async function handler(req, res) {
     transcriptLines: transcript.length,
   });
 
+  // Duplicate-capture guard (live incident 2026-07-10: a page reload / tab-
+  // close race posted the SAME real-world call twice, ~5s apart, with
+  // different partial attendee lists — two separate dashboard cards for one
+  // meeting, plus a wasted Claude call on the incomplete one). If a row for
+  // this exact meeting_id was created recently, merge into it (UPDATE, not
+  // INSERT) instead of creating a visible duplicate.
+  const existing = await getRecentMeetingByMeetingId(meeting_id).catch((err) => {
+    console.error("[meetings/ingest] duplicate-capture lookup failed (non-fatal, proceeding as new)", err);
+    return null;
+  });
+  const updateId = existing?.id;
+  if (existing) {
+    transcript = transcript.length > (existing.transcript?.length || 0) ? transcript : existing.transcript;
+    attendees = Array.from(new Set([...(existing.attendees || []), ...attendees]));
+    if (existing.extracted?.project_name) {
+      // Already extracted a real project from this meeting — just top up
+      // the record with anything new, don't re-run the paid extraction or
+      // risk a second confirmation DM for the same project.
+      await persistMeeting({ meeting_id, ended_at, attendees, transcript, extracted: existing.extracted, updateId });
+      console.log(`[meetings/ingest] merged duplicate capture into existing meeting ${updateId} — skipping re-extraction`);
+      res.status(200).json({ status: "received", extraction: "skipped_duplicate_already_processed" });
+      return;
+    }
+  }
+
   // Nothing to extract from an empty transcript (CC never enabled, or an
   // empty probe) — persist the record as a capture-failure signal, but don't
   // spend a Claude call on it.
   if (transcript.length === 0) {
-    await persistMeeting({ meeting_id, ended_at, attendees, transcript, extracted: null });
+    await persistMeeting({ meeting_id, ended_at, attendees, transcript, extracted: null, updateId });
     res.status(200).json({ status: "received", extraction: "skipped_empty_transcript" });
     return;
   }
@@ -176,7 +215,7 @@ export default async function handler(req, res) {
   try {
     const extracted = await extractProject({ transcript, attendees });
     console.log("[meetings/ingest] extracted", extracted);
-    await persistMeeting({ meeting_id, ended_at, attendees, transcript, extracted });
+    await persistMeeting({ meeting_id, ended_at, attendees, transcript, extracted, updateId });
     await triggerConfirmation({ meeting_id, extracted, attendees });
     res.status(200).json({ status: "received", extracted });
   } catch (err) {
